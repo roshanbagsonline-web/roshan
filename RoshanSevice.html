@@ -56,15 +56,36 @@ const getDirectGoogleDriveImageUrl = (url) => {
 
 
 // === From utils/pdfUtils.ts ===
-const downloadSlipAsPdf = async (element, format, slipNo, customerName) => {
+const waitForImagesToLoad = (element) => {
+    const images = Array.from(element.getElementsByTagName('img'));
+    const promises = images.map(img => {
+        return new Promise((resolve) => {
+            if (img.complete && img.naturalHeight !== 0) {
+                resolve();
+            } else {
+                img.onload = resolve;
+                // Also resolve on error to prevent blocking the PDF generation indefinitely
+                img.onerror = resolve; 
+            }
+        });
+    });
+    return Promise.all(promises);
+};
+
+const generatePdfBlob = async (element, format) => {
     if (!element) {
         throw new Error("Element to capture is not available.");
     }
+    
+    // Wait for images inside the slip to load before capturing
+    await waitForImagesToLoad(element);
+
     const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
     });
-    const imgData = canvas.toDataURL('image/png');
+    // Use JPEG with quality setting to significantly reduce file size
+    const imgData = canvas.toDataURL('image/jpeg', 0.85);
     const pageDimensions = {
         a4: { width: 210, height: 297 },
         a5: { width: 148, height: 210 },
@@ -85,9 +106,54 @@ const downloadSlipAsPdf = async (element, format, slipNo, customerName) => {
     }
     const xOffset = (pageWidth - imgWidth) / 2;
     const yOffset = (pageHeight - imgHeight) / 2;
-    pdf.addImage(imgData, 'PNG', xOffset, yOffset, imgWidth, imgHeight);
-    const filename = `${customerName.replace(/ /g, '_')}_${slipNo}.pdf`;
-    pdf.save(filename);
+    // Add image as JPEG
+    pdf.addImage(imgData, 'JPEG', xOffset, yOffset, imgWidth, imgHeight);
+    return pdf.output('blob');
+};
+
+
+// === New utility for image compression ===
+const compressImage = (file, maxWidth = 1024, maxHeight = 1024, quality = 0.8) => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+            const img = new Image();
+            img.src = event.target.result;
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+
+                if (width > height) {
+                    if (width > maxWidth) {
+                        height *= maxWidth / width;
+                        width = maxWidth;
+                    }
+                } else {
+                    if (height > maxHeight) {
+                        width *= maxHeight / height;
+                        height = maxHeight;
+                    }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                
+                const dataUrl = canvas.toDataURL('image/jpeg', quality);
+                
+                resolve({
+                    base64: dataUrl.split(',')[1],
+                    dataUrl: dataUrl,
+                    mimeType: 'image/jpeg',
+                });
+            };
+            img.onerror = (error) => reject(error);
+        };
+        reader.onerror = (error) => reject(error);
+    });
 };
 
 
@@ -341,6 +407,17 @@ const PrintableSlip = forwardRef(({ service }, ref) => {
                     <div className="md:col-span-3">
                          <DetailItem label="Service Required" value={service.serviceType} boldValue={false} />
                     </div>
+                    {service.imageUrl && (
+                         <div className="md:col-span-3 mt-4">
+                             <p className="text-sm text-gray-500 uppercase tracking-wider">Product Image</p>
+                             <img 
+                                 src={getDirectGoogleDriveImageUrl(service.imageUrl)} 
+                                 crossOrigin="anonymous" 
+                                 alt="Product" 
+                                 className="mt-2 border border-gray-200 rounded-lg max-h-48 object-contain"
+                             />
+                         </div>
+                    )}
                 </Section>
 
                 <hr className="border-gray-200"/>
@@ -369,22 +446,72 @@ const PrintableSlip = forwardRef(({ service }, ref) => {
 
 
 // === From components/ServiceSlipModal.tsx ===
+const DownloadButton = ({ format, service, slipRef }) => {
+    const [generating, setGenerating] = useState(false);
+    const [url, setUrl] = useState(null);
+
+    useEffect(() => {
+        // Cleanup function to revoke the object URL
+        return () => {
+            if (url) {
+                URL.revokeObjectURL(url);
+            }
+        };
+    }, [url]);
+
+    const handleGenerate = async () => {
+        if (!slipRef.current) return;
+        setGenerating(true);
+        setUrl(null);
+        try {
+            const blob = await generatePdfBlob(slipRef.current, format);
+            setUrl(URL.createObjectURL(blob));
+        } catch (error) {
+            console.error(`Failed to generate ${format} PDF:`, error);
+            alert('Sorry, there was an error creating the PDF.');
+        } finally {
+            setGenerating(false);
+        }
+    };
+    
+    const filename = `${service.customerName.replace(/ /g, '_')}_${service.slipNo}.pdf`;
+    const isA5 = format === 'a5';
+    const baseClasses = "inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2";
+    const a5Classes = "bg-green-600 hover:bg-green-700 focus:ring-green-500";
+    const a4Classes = "bg-purple-600 hover:bg-purple-700 focus:ring-purple-500";
+
+    if (generating) {
+        return (
+            <button type="button" disabled className={`${baseClasses} ${isA5 ? a5Classes : a4Classes} opacity-75 cursor-wait`}>
+                <Spinner size="sm" />
+                <span className="ml-2">Generating...</span>
+            </button>
+        );
+    }
+
+    if (url) {
+        return (
+            <a href={url} download={filename} className={`${baseClasses} ${isA5 ? a5Classes : a4Classes}`}>
+                Download {format.toUpperCase()} PDF
+            </a>
+        );
+    }
+    
+    return (
+        <button type="button" onClick={handleGenerate} className={`${baseClasses} ${isA5 ? a5Classes : a4Classes}`}>
+            Generate {format.toUpperCase()} PDF
+        </button>
+    );
+};
+
 const ServiceSlipModal = ({ service, onClose }) => {
     const slipRef = useRef(null);
     if (!service) return null;
+    
     const handlePrint = () => {
         window.print();
     };
-    const handleDownload = async (format) => {
-        if (slipRef.current) {
-            try {
-                await downloadSlipAsPdf(slipRef.current, format, service.slipNo, service.customerName);
-            } catch (error) {
-                console.error(`Failed to download PDF in ${format} format:`, error);
-                alert('Sorry, there was an error creating the PDF.');
-            }
-        }
-    };
+
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
@@ -405,15 +532,44 @@ const ServiceSlipModal = ({ service, onClose }) => {
                     <button type="button" onClick={onClose} className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
                         Close
                     </button>
-                    <button type="button" onClick={() => handleDownload('a5')} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
-                        Download A5 PDF
-                    </button>
-                    <button type="button" onClick={() => handleDownload('a4')} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
-                        Download A4 PDF
-                    </button>
-                     <button type="button" onClick={handlePrint} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                    <DownloadButton format="a5" service={service} slipRef={slipRef} />
+                    <DownloadButton format="a4" service={service} slipRef={slipRef} />
+                    <button type="button" onClick={handlePrint} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
                         Print Slip
                     </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// === New Component: DownloadSlipModal ===
+const DownloadSlipModal = ({ service, onClose }) => {
+    const slipRef = useRef(null);
+    if (!service) return null;
+    
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+                <div className="p-4 border-b">
+                    <div className="flex justify-between items-center">
+                        <h3 className="text-xl font-semibold text-gray-800">Download Service Slip</h3>
+                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                            <i className="fas fa-times fa-lg"></i>
+                        </button>
+                    </div>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                    <div ref={slipRef}>
+                        <PrintableSlip service={service} />
+                    </div>
+                </div>
+                <div className="p-4 bg-gray-50 border-t flex flex-wrap justify-end items-center gap-2">
+                    <button type="button" onClick={onClose} className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        Close
+                    </button>
+                    <DownloadButton format="a5" service={service} slipRef={slipRef} />
+                    <DownloadButton format="a4" service={service} slipRef={slipRef} />
                 </div>
             </div>
         </div>
@@ -427,7 +583,8 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState(null);
     const [imagePreview, setImagePreview] = useState(null);
-    const [imageFile, setImageFile] = useState(null);
+    const [newImageData, setNewImageData] = useState(null);
+    const [compressing, setCompressing] = useState(false);
     const [selectedServices, setSelectedServices] = useState([]);
     const [color, setColor] = useState('');
     const [size, setSize] = useState('');
@@ -436,7 +593,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
             setFormData(service);
             const directUrl = getDirectGoogleDriveImageUrl(service.imageUrl);
             setImagePreview(directUrl);
-            setImageFile(null);
+            setNewImageData(null);
             const serviceTypes = service.serviceType ? service.serviceType.split(',').map(s => s.trim()) : [];
             setSelectedServices(serviceTypes);
             const [colorVal = '', sizeVal = ''] = service.colorAndSize ? service.colorAndSize.split(' / ') : [];
@@ -448,24 +605,30 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
     };
-    const handleImageChange = (e) => {
+    const handleImageChange = async (e) => {
         const file = e.target.files?.[0];
         if (file) {
-            setImageFile(file);
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setImagePreview(reader.result);
-            };
-            reader.readAsDataURL(file);
+            setCompressing(true);
+            setError(null);
+            try {
+                const compressed = await compressImage(file);
+                const newFileName = file.name.replace(/\.[^/.]+$/, "") + ".jpeg";
+                setNewImageData({
+                    base64: compressed.base64,
+                    name: newFileName,
+                    mimeType: compressed.mimeType,
+                });
+                setImagePreview(compressed.dataUrl);
+            } catch (err) {
+                setError('Failed to process image. Please select a different file.');
+                console.error("Image compression error:", err);
+                const directUrl = getDirectGoogleDriveImageUrl(service.imageUrl);
+                setImagePreview(directUrl);
+                setNewImageData(null);
+            } finally {
+                setCompressing(false);
+            }
         }
-    };
-    const fileToBase64 = (file) => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.readAsDataURL(file);
-            reader.onload = () => resolve((reader.result).split(',')[1]);
-            reader.onerror = error => reject(error);
-        });
     };
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -479,10 +642,10 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
                 serviceType: selectedServices.join(', '),
                 colorAndSize: `${color} / ${size}`
             };
-            if (imageFile) {
-                payload.image = await fileToBase64(imageFile);
-                payload.imageName = imageFile.name;
-                payload.imageMimeType = imageFile.type;
+            if (newImageData) {
+                payload.image = newImageData.base64;
+                payload.imageName = newImageData.name;
+                payload.imageMimeType = newImageData.mimeType;
             } else {
                  payload.imageUrl_existing = service.imageUrl;
             }
@@ -585,7 +748,8 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
                         <div className="p-6 border border-gray-200 rounded-lg">
                              <h4 className="text-lg font-semibold text-gray-700 mb-4">Product Image</h4>
                             <input type="file" name="image" id="image_update" accept="image/*" onChange={handleImageChange} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
-                            {imagePreview && (
+                            {compressing && <div className="mt-4 flex items-center text-sm text-gray-600"><Spinner size="sm" /><span className="ml-2">Compressing image...</span></div>}
+                            {imagePreview && !compressing && (
                                 <div className="mt-4">
                                     <img src={imagePreview} alt="Product Preview" className="max-h-48 rounded-lg border border-gray-300 p-1"/>
                                 </div>
@@ -902,7 +1066,8 @@ const ServiceEntryForm = ({ onSuccess }) => {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState(null);
     const [imagePreview, setImagePreview] = useState(null);
-    const [imageFile, setImageFile] = useState(null);
+    const [imageData, setImageData] = useState(null);
+    const [compressing, setCompressing] = useState(false);
     const [selectedServices, setSelectedServices] = useState([]);
     const [warrantyStatus, setWarrantyStatus] = useState('Non-Warranty');
     const fetchSlip = useCallback(async () => {
@@ -924,33 +1089,38 @@ const ServiceEntryForm = ({ onSuccess }) => {
         const { name, value } = e.target;
         setFormData(prev => ({...prev, [name]: value}));
     };
-    const handleImageChange = (e) => {
+    const handleImageChange = async (e) => {
         const file = e.target.files?.[0];
         if (file) {
-            setImageFile(file);
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setImagePreview(reader.result);
-            };
-            reader.readAsDataURL(file);
+            setCompressing(true);
+            setError(null);
+            try {
+                const compressed = await compressImage(file);
+                const newFileName = file.name.replace(/\.[^/.]+$/, "") + ".jpeg";
+                setImageData({
+                    base64: compressed.base64,
+                    name: newFileName,
+                    mimeType: compressed.mimeType,
+                });
+                setImagePreview(compressed.dataUrl);
+            } catch (err) {
+                 setError('Failed to process image. Please select a different file.');
+                 console.error("Image compression error:", err);
+                 setImageData(null);
+                 setImagePreview(null);
+            } finally {
+                setCompressing(false);
+            }
         } else {
-            setImageFile(null);
+            setImageData(null);
             setImagePreview(null);
         }
-    };
-    const fileToBase64 = (file) => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.readAsDataURL(file);
-            reader.onload = () => resolve((reader.result).split(',')[1]);
-            reader.onerror = error => reject(error);
-        });
     };
     const handleSubmit = async (e) => {
         e.preventDefault();
         setSubmitting(true);
         setError(null);
-        if (!imageFile) {
+        if (!imageData) {
             setError("Product image is required.");
             setSubmitting(false);
             return;
@@ -961,7 +1131,6 @@ const ServiceEntryForm = ({ onSuccess }) => {
             return;
         }
         try {
-            const base64Image = await fileToBase64(imageFile);
             const payload = {
                 date: formData.date,
                 slipNo: slipNo,
@@ -975,9 +1144,9 @@ const ServiceEntryForm = ({ onSuccess }) => {
                 estimateAmount: warrantyStatus === 'Non-Warranty' ? formData.estimateAmount : '',
                 warrantyInvoiceNumber: warrantyStatus === 'Warranty' ? formData.warrantyInvoiceNumber : '',
                 warrantyDate: warrantyStatus === 'Warranty' ? formData.warrantyDate : '',
-                image: base64Image,
-                imageName: imageFile.name,
-                imageMimeType: imageFile.type,
+                image: imageData.base64,
+                imageName: imageData.name,
+                imageMimeType: imageData.mimeType,
                 servicemanAmount: '',
                 customerPaidAmount: '',
                 invoiceNumber: '',
@@ -996,7 +1165,7 @@ const ServiceEntryForm = ({ onSuccess }) => {
             setFormData(initialFormData);
             setSelectedServices([]);
             setImagePreview(null);
-            setImageFile(null);
+            setImageData(null);
             fetchSlip();
             onSuccess(newServiceData);
         } catch (err) {
@@ -1107,7 +1276,8 @@ const ServiceEntryForm = ({ onSuccess }) => {
                 <div className="p-6 border border-gray-200 rounded-lg">
                     <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-camera mr-3 text-purple-500"></i>Product Image *</h3>
                     <input type="file" name="image" id="image" accept="image/*" capture="environment" onChange={handleImageChange} required className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
-                    {imagePreview && (
+                    {compressing && <div className="mt-4 flex items-center text-sm text-gray-600"><Spinner size="sm" /><span className="ml-2">Compressing image...</span></div>}
+                    {imagePreview && !compressing && (
                         <div className="mt-4">
                             <img src={imagePreview} alt="Product Preview" className="max-h-48 rounded-lg border border-gray-300 p-1"/>
                         </div>
@@ -1193,7 +1363,6 @@ const App = () => {
     const [showSlipFor, setShowSlipFor] = useState(null);
     const [serviceToDownload, setServiceToDownload] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-    const downloadSlipRef = useRef(null);
     const handleEditService = (service) => {
         setSelectedService(service);
         setIsUpdateModalOpen(true);
@@ -1217,20 +1386,6 @@ const App = () => {
     const handleDownloadRequest = (service) => {
         setServiceToDownload(service);
     };
-    useEffect(() => {
-        if (serviceToDownload && downloadSlipRef.current) {
-            const generatePdf = async () => {
-                await downloadSlipAsPdf(
-                    downloadSlipRef.current, 
-                    'a4', 
-                    serviceToDownload.slipNo,
-                    serviceToDownload.customerName
-                );
-                setServiceToDownload(null);
-            };
-            setTimeout(generatePdf, 100); 
-        }
-    }, [serviceToDownload]);
     const navigate = (page) => {
         setCurrentPage(page);
     };
@@ -1275,11 +1430,10 @@ const App = () => {
                 />
             )}
             {serviceToDownload && (
-                <div style={{ position: 'absolute', left: '-9999px', top: 0, zIndex: -100, width: '800px' }} className="bg-white">
-                    <div ref={downloadSlipRef}>
-                        <PrintableSlip service={serviceToDownload} />
-                    </div>
-                </div>
+                <DownloadSlipModal
+                    service={serviceToDownload}
+                    onClose={() => setServiceToDownload(null)}
+                />
             )}
         </div>
     );
