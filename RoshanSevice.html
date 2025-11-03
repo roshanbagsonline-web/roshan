@@ -1,0 +1,1304 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Service Hub Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha512-BNaRQnYJYiPSqHHDb58B0yaPfCu+Wgds8Gp/gU33kqBtgNS4tSPHuGibyoVBL5gI9kDXrdVwTsoU_GRweLgnag==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" integrity="sha512-qZvrmS2ekKPF2mSznTQsxqPgnpkI4DNTlrdUmTzrDgektczlKNRRhy5X5AAOnx5S09ydFYWWNSfcEqDTTHgtNA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <!-- Add Babel for in-browser JSX/TSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client"
+  }
+}
+</script>
+</head>
+  <body class="bg-gray-100">
+    <div id="root"></div>
+    <!-- All application code is now inside this single script block -->
+    <script type="text/babel" data-type="module">
+// --- Start of consolidated application code ---
+
+import React, { useState, useCallback, useRef, useEffect, useMemo, forwardRef } from 'react';
+import ReactDOM from 'react-dom/client';
+
+// === From types.ts ===
+var ServiceStatus;
+(function (ServiceStatus) {
+    ServiceStatus["New"] = "New";
+    ServiceStatus["InService"] = "In Service";
+    ServiceStatus["Completed"] = "Completed";
+    ServiceStatus["Informed"] = "Informed to Customer";
+    ServiceStatus["Delivered"] = "Delivered to Customer";
+})(ServiceStatus || (ServiceStatus = {}));
+
+
+// === From utils/imageUtils.ts ===
+const getDirectGoogleDriveImageUrl = (url) => {
+    if (!url || !url.includes('drive.google.com')) {
+        return url || '';
+    }
+    const match = url.match(/drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+        const fileId = match[1];
+        return `https://drive.google.com/thumbnail?id=${fileId}`;
+    }
+    return url;
+};
+
+
+// === From utils/pdfUtils.ts ===
+const downloadSlipAsPdf = async (element, format, slipNo, customerName) => {
+    if (!element) {
+        throw new Error("Element to capture is not available.");
+    }
+    const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+    });
+    const imgData = canvas.toDataURL('image/png');
+    const pageDimensions = {
+        a4: { width: 210, height: 297 },
+        a5: { width: 148, height: 210 },
+    };
+    const { width: pageWidth, height: pageHeight } = pageDimensions[format];
+    const { jsPDF } = jspdf;
+    const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: format,
+    });
+    const canvasAspectRatio = canvas.width / canvas.height;
+    let imgWidth = pageWidth;
+    let imgHeight = imgWidth / canvasAspectRatio;
+    if (imgHeight > pageHeight) {
+        imgHeight = pageHeight;
+        imgWidth = imgHeight * canvasAspectRatio;
+    }
+    const xOffset = (pageWidth - imgWidth) / 2;
+    const yOffset = (pageHeight - imgHeight) / 2;
+    pdf.addImage(imgData, 'PNG', xOffset, yOffset, imgWidth, imgHeight);
+    const filename = `${customerName.replace(/ /g, '_')}_${slipNo}.pdf`;
+    pdf.save(filename);
+};
+
+
+// === From services/googleSheetService.ts ===
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDHRcCXcJLeF_2OMk5Pcuf_NNwXRlnPXOZCVpS7zVwN6saQr_QLzJ2VzO9FczJSuJB2w/exec";
+async function apiRequest(action, method = 'GET', payload) {
+    const url = new URL(SCRIPT_URL);
+    if (method === 'GET') {
+        url.searchParams.append('action', action);
+        if (payload) {
+            Object.entries(payload).forEach(([key, value]) => {
+                url.searchParams.append(key, String(value));
+            });
+        }
+    }
+    const options = {
+        method,
+        headers: {},
+    };
+    if (method === 'POST') {
+        options.body = JSON.stringify({ action, ...payload });
+        options.headers = { 'Content-Type': 'text/plain;charset=utf-8' };
+    }
+    try {
+        const response = await fetch(url.toString(), options);
+        const contentType = response.headers.get("content-type");
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+        }
+        if (!contentType || !contentType.includes("application/json")) {
+            if (contentType && contentType.includes("text/html")) {
+                throw new Error("Received HTML instead of JSON. Please check your Google Apps Script deployment settings. Ensure 'Who has access' is set to 'Anyone'.");
+            }
+            throw new Error(`Expected JSON response, but received content type: ${contentType}`);
+        }
+        const result = await response.json();
+        if (result.status === 'error') {
+            throw new Error(result.message || 'An unknown error occurred in the script');
+        }
+        return result;
+    }
+    catch (error) {
+        console.error(`Error during ${action}:`, error);
+        throw error;
+    }
+}
+const getLastSlipNumber = () => {
+    return apiRequest('getLastSlip').then(data => data.lastSlipNumber);
+};
+const submitService = (formData) => {
+    return apiRequest('addService', 'POST', formData);
+};
+const updateService = (formData) => {
+    console.log("Updating service with payload:", formData);
+    return apiRequest('updateService', 'POST', formData);
+};
+const getAllServices = () => {
+    return apiRequest('getAllServices').then(res => res.data);
+};
+
+
+// === From components/Spinner.tsx ===
+const Spinner = ({ size = 'md' }) => {
+    const sizeClasses = {
+        sm: 'h-5 w-5 border-2',
+        md: 'h-8 w-8 border-4',
+        lg: 'h-16 w-16 border-8',
+    };
+    return (<div className={`animate-spin rounded-full ${sizeClasses[size]} border-purple-500 border-t-transparent`}></div>);
+};
+
+
+// === From components/ImagePreviewModal.tsx ===
+const ImagePreviewModal = ({ imageUrl, onClose }) => {
+    return (
+        <div 
+            className="fixed inset-0 bg-black bg-opacity-75 z-50 flex justify-center items-center p-4"
+            onClick={onClose}
+        >
+            <div 
+                className="relative bg-white p-4 rounded-lg max-w-3xl max-h-[90vh]"
+                onClick={(e) => e.stopPropagation()}
+            >
+                <img src={imageUrl} alt="Service product" className="w-full h-full object-contain"/>
+                <button 
+                    onClick={onClose}
+                    className="absolute top-2 right-2 text-white bg-black bg-opacity-50 rounded-full w-8 h-8 flex items-center justify-center hover:bg-opacity-75"
+                    aria-label="Close image preview"
+                >
+                    <i className="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+    );
+};
+
+
+// === From components/MultiSelectDropdown.tsx ===
+const MultiSelectDropdown = ({
+    options,
+    selectedOptions,
+    onChange,
+    placeholder = "Select services..."
+}) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const wrapperRef = useRef(null);
+    useEffect(() => {
+        function handleClickOutside(event) {
+            if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+                setIsOpen(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, [wrapperRef]);
+    const handleOptionToggle = (option) => {
+        const newSelectedOptions = selectedOptions.includes(option)
+            ? selectedOptions.filter(o => o !== option)
+            : [...selectedOptions, option];
+        onChange(newSelectedOptions);
+    };
+    const getButtonText = () => {
+        if (selectedOptions.length === 0) {
+            return placeholder;
+        }
+        if (selectedOptions.length === 1) {
+            return selectedOptions[0];
+        }
+        return `${selectedOptions.length} services selected`;
+    };
+    return (
+        <div className="relative w-full" ref={wrapperRef}>
+            <button
+                type="button"
+                onClick={() => setIsOpen(!isOpen)}
+                className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm text-left focus:outline-none focus:ring-purple-500 focus:border-purple-500 flex justify-between items-center"
+            >
+                <span className="truncate">{getButtonText()}</span>
+                <i className={`fas fa-chevron-down transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}></i>
+            </button>
+            {isOpen && (
+                <div className="absolute z-10 mt-1 w-full bg-white shadow-lg border rounded-md max-h-60 overflow-y-auto">
+                    <ul className="py-1">
+                        {options.map(option => (
+                            <li
+                                key={option}
+                                className="px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 cursor-pointer"
+                                onClick={() => handleOptionToggle(option)}
+                            >
+                                <label className="flex items-center space-x-3 w-full cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedOptions.includes(option)}
+                                        readOnly
+                                        className="h-4 w-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500 cursor-pointer"
+                                    />
+                                    <span>{option}</span>
+                                </label>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    );
+};
+
+
+// === From components/PrintableSlip.tsx ===
+const DetailItem = ({ label, value, boldValue = true, largeValue = false }) => (
+    <div>
+        <p className="text-sm text-gray-500 uppercase tracking-wider">{label}</p>
+        <p className={`text-gray-900 ${largeValue ? 'text-xl' : 'text-base'} ${boldValue ? 'font-semibold' : 'font-normal'}`}>{value || '-'}</p>
+    </div>
+);
+const Section = ({ title, children, className = '' }) => (
+    <div className={`print-no-break ${className}`}>
+        <h3 className="text-lg font-bold text-purple-700 mb-4">{title}</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-4">
+            {children}
+        </div>
+    </div>
+);
+const PrintableSlip = forwardRef(({ service }, ref) => {
+    return (
+        <div ref={ref} className="p-8 bg-white font-sans text-gray-800" id="printable-slip">
+            <style>{`
+                @media print {
+                    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                    body * { visibility: hidden; }
+                    #printable-slip, #printable-slip * { visibility: visible; }
+                    #printable-slip {
+                         position: absolute;
+                         left: 0;
+                         top: 0;
+                         width: 100%;
+                         height: auto;
+                         margin: 0;
+                         padding: 20px;
+                    }
+                    .print-no-break { page-break-inside: avoid; }
+                }
+            `}</style>
+
+            <header className="flex justify-between items-start pb-6 mb-6 border-b border-gray-200 print-no-break">
+                <div className="flex items-center space-x-4">
+                    <div className="flex-shrink-0 bg-purple-600 p-4 rounded-lg shadow-md">
+                        <i className="fas fa-tools text-white text-3xl fa-fw"></i>
+                    </div>
+                    <div>
+                        <h2 className="font-extrabold text-4xl text-gray-800">Roshan Bags</h2>
+                        <p className="text-lg text-gray-500">Service Department</p>
+                    </div>
+                </div>
+                <div className="text-right text-sm text-gray-600">
+                    <p>33, SOUTH USMAN ROAD, NEAR BUS TERMINUS, T.NAGAR</p>
+                    <p>CHENNAI-600017</p>
+                    <p className="mt-2">Ph: 9345735945 | E-Mail: sales@roshanbags.com</p>
+                    <p className="font-semibold text-gray-700 mt-2">GST: 33AAIFR7046M1ZT</p>
+                </div>
+            </header>
+
+            <div className="bg-purple-50 p-2 my-6 print-no-break">
+                <h1 className="text-center text-xl font-bold text-purple-800 tracking-widest uppercase">Service Slip</h1>
+            </div>
+
+            <main className="space-y-6">
+                <div className="grid grid-cols-2 gap-6 pb-6">
+                    <DetailItem label="Slip No." value={service.slipNo} largeValue={true} />
+                    <DetailItem label="Date" value={service.date ? service.date.split('T')[0] : '-'} largeValue={true} />
+                </div>
+                
+                <hr className="border-gray-200"/>
+
+                <Section title="Customer Information" className="pt-6">
+                    <div className="md:col-span-2">
+                        <DetailItem label="Customer Name" value={service.customerName} />
+                    </div>
+                    <DetailItem label="Contact Number" value={service.contact} />
+                </Section>
+                
+                <hr className="border-gray-200"/>
+
+                <Section title="Product Information" className="pt-6">
+                    <DetailItem label="Product Name" value={service.productName} />
+                    <DetailItem label="Brand" value={service.brand} />
+                    <DetailItem label="Color / Size" value={service.colorAndSize} />
+                    <div className="md:col-span-3">
+                         <DetailItem label="Service Required" value={service.serviceType} boldValue={false} />
+                    </div>
+                </Section>
+
+                <hr className="border-gray-200"/>
+                
+                <Section title="Warranty & Estimate" className="pt-6">
+                     <DetailItem label="Warranty Status" value={service.warrantyStatus} />
+                        {service.warrantyStatus === 'Warranty' ? (
+                            <>
+                                <DetailItem label="Warranty Invoice" value={service.warrantyInvoiceNumber} />
+                                <DetailItem label="Warranty Date" value={service.warrantyDate ? service.warrantyDate.split('T')[0] : '-'} />
+                            </>
+                        ) : (
+                            <DetailItem label="Estimate Amount" value={service.estimateAmount ? `₹ ${service.estimateAmount}` : '-'} />
+                        )}
+                </Section>
+            </main>
+
+             <footer className="text-center mt-12 pt-6 border-t border-gray-200 text-sm text-gray-500 print-no-break">
+                <p className="font-semibold mb-2 text-base text-gray-600">Thank you for your business!</p>
+                <p>This is a computer-generated slip and does not require a signature.</p>
+                <p>Please keep this slip for future reference.</p>
+            </footer>
+        </div>
+    );
+});
+
+
+// === From components/ServiceSlipModal.tsx ===
+const ServiceSlipModal = ({ service, onClose }) => {
+    const slipRef = useRef(null);
+    if (!service) return null;
+    const handlePrint = () => {
+        window.print();
+    };
+    const handleDownload = async (format) => {
+        if (slipRef.current) {
+            try {
+                await downloadSlipAsPdf(slipRef.current, format, service.slipNo, service.customerName);
+            } catch (error) {
+                console.error(`Failed to download PDF in ${format} format:`, error);
+                alert('Sorry, there was an error creating the PDF.');
+            }
+        }
+    };
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+                <div className="p-4 border-b print:hidden">
+                    <div className="flex justify-between items-center">
+                        <h3 className="text-xl font-semibold text-gray-800">Service Request Created Successfully!</h3>
+                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                            <i className="fas fa-times fa-lg"></i>
+                        </button>
+                    </div>
+                </div>
+                <div className="flex-1 overflow-y-auto" >
+                    <div ref={slipRef}>
+                        <PrintableSlip service={service} />
+                    </div>
+                </div>
+                <div className="p-4 bg-gray-50 border-t flex flex-wrap justify-end items-center gap-2 print:hidden">
+                    <button type="button" onClick={onClose} className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        Close
+                    </button>
+                    <button type="button" onClick={() => handleDownload('a5')} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                        Download A5 PDF
+                    </button>
+                    <button type="button" onClick={() => handleDownload('a4')} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500">
+                        Download A4 PDF
+                    </button>
+                     <button type="button" onClick={handlePrint} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                        Print Slip
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
+// === From components/UpdateServiceModal.tsx ===
+const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
+    const [formData, setFormData] = useState(service);
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState(null);
+    const [imagePreview, setImagePreview] = useState(null);
+    const [imageFile, setImageFile] = useState(null);
+    const [selectedServices, setSelectedServices] = useState([]);
+    const [color, setColor] = useState('');
+    const [size, setSize] = useState('');
+    useEffect(() => {
+        if (service) {
+            setFormData(service);
+            const directUrl = getDirectGoogleDriveImageUrl(service.imageUrl);
+            setImagePreview(directUrl);
+            setImageFile(null);
+            const serviceTypes = service.serviceType ? service.serviceType.split(',').map(s => s.trim()) : [];
+            setSelectedServices(serviceTypes);
+            const [colorVal = '', sizeVal = ''] = service.colorAndSize ? service.colorAndSize.split(' / ') : [];
+            setColor(colorVal);
+            setSize(sizeVal);
+        }
+    }, [service]);
+    const handleChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({ ...prev, [name]: value }));
+    };
+    const handleImageChange = (e) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            setImageFile(file);
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                setImagePreview(reader.result);
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+    const fileToBase64 = (file) => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve((reader.result).split(',')[1]);
+            reader.onerror = error => reject(error);
+        });
+    };
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setSubmitting(true);
+        setError(null);
+        try {
+            const finalWarrantyDate = formData.warrantyStatus === 'Warranty' ? formData.warrantyDate : '';
+            const payload = { 
+                ...formData,
+                warrantyDate: finalWarrantyDate,
+                serviceType: selectedServices.join(', '),
+                colorAndSize: `${color} / ${size}`
+            };
+            if (imageFile) {
+                payload.image = await fileToBase64(imageFile);
+                payload.imageName = imageFile.name;
+                payload.imageMimeType = imageFile.type;
+            } else {
+                 payload.imageUrl_existing = service.imageUrl;
+            }
+            await updateService(payload);
+            alert('Service updated successfully!');
+            onSuccess();
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+            setError(`Update failed: ${errorMessage}`);
+            console.error(err);
+        } finally {
+            setSubmitting(false);
+        }
+    };
+    if (!isOpen) return null;
+    const serviceStatusOptions = ['New', 'In Service', 'Completed', 'Informed to Customer', 'Delivered to Customer'];
+    const serviceOptions = [
+        "Stitching", "Zip Repair/Replacement", "Runner Replacement", "Handle Repair/Replacement", 
+        "Strolly Wheel/Handle Repair", "Buckle Repair/Replacement", "Professional Cleaning", 
+        "Strap Adjustment/Replacement", "Lock Repair/Replacement", "Bags"
+    ];
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
+                <div className="p-6 border-b sticky top-0 bg-white z-10">
+                    <div className="flex justify-between items-center">
+                        <h3 className="text-2xl font-semibold text-gray-800">Edit Service Record (Slip No: {service.slipNo})</h3>
+                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                            <i className="fas fa-times fa-lg"></i>
+                        </button>
+                    </div>
+                </div>
+                <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+                    <div className="p-6 space-y-6">
+                        {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>}
+                        
+                        <div className="p-6 border border-gray-200 rounded-lg">
+                            <h3 className="text-lg font-semibold text-gray-700 mb-4">Customer & Product Information <span className="text-sm font-normal text-gray-500">(Read-Only)</span></h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                <InputField label="Customer Name" name="customerName" value={formData.customerName} onChange={handleChange} disabled />
+                                <InputField label="Contact" name="contact" value={formData.contact} onChange={handleChange} disabled />
+                                <InputField label="Product Name" name="productName" value={formData.productName} onChange={handleChange} disabled />
+                                <InputField label="Brand" name="brand" value={formData.brand} onChange={handleChange} disabled />
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Color</label>
+                                    <input type="text" value={color} onChange={e => setColor(e.target.value)} disabled className="mt-1 block w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-md shadow-sm cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-purple-500"/>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Size</label>
+                                    <input type="text" value={size} onChange={e => setSize(e.target.value)} disabled className="mt-1 block w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-md shadow-sm cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-purple-500"/>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="p-6 border border-gray-200 rounded-lg">
+                            <h3 className="text-lg font-semibold text-gray-700 mb-4">Service & Warranty Details</h3>
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Warranty Status</label>
+                                    <select name="warrantyStatus" value={formData.warrantyStatus} onChange={handleChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                        <option value="Non-Warranty">Non-Warranty</option>
+                                        <option value="Warranty">Warranty</option>
+                                    </select>
+                                </div>
+                                {formData.warrantyStatus === 'Non-Warranty' ? (
+                                    <InputField label="Estimate Amount" name="estimateAmount" type="number" value={formData.estimateAmount} onChange={handleChange} />
+                                ) : (
+                                    <>
+                                        <InputField label="Warranty Invoice Number" name="warrantyInvoiceNumber" value={formData.warrantyInvoiceNumber} onChange={handleChange} />
+                                        <InputField label="Warranty Date" name="warrantyDate" type="date" value={formData.warrantyDate} onChange={handleChange} />
+                                    </>
+                                )}
+                             </div>
+                             <div className="mt-6">
+                                <h4 className="text-md font-semibold text-gray-700 mb-2">Service Description</h4>
+                                <MultiSelectDropdown
+                                    options={serviceOptions}
+                                    selectedOptions={selectedServices}
+                                    onChange={setSelectedServices}
+                                />
+                            </div>
+                        </div>
+
+                         <div className="p-6 border border-gray-200 rounded-lg">
+                            <h3 className="text-lg font-semibold text-gray-700 mb-4">Service Status & Billing</h3>
+                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700">Service Status</label>
+                                    <select name="serviceStatus" value={formData.serviceStatus} onChange={handleChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                        {serviceStatusOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                                    </select>
+                                </div>
+                                <InputField label="Serviceman Amount" name="servicemanAmount" type="number" value={formData.servicemanAmount} onChange={handleChange} />
+                                <InputField label="Serviceman Name" name="servicemanName" value={formData.servicemanName} onChange={handleChange} />
+                                <InputField label="Customer Paid Amount" name="customerPaidAmount" type="number" value={formData.customerPaidAmount} onChange={handleChange} />
+                                <InputField label="Final Invoice Number" name="invoiceNumber" value={formData.invoiceNumber} onChange={handleChange} />
+                            </div>
+                        </div>
+                        
+                        <div className="p-6 border border-gray-200 rounded-lg">
+                             <h4 className="text-lg font-semibold text-gray-700 mb-4">Product Image</h4>
+                            <input type="file" name="image" id="image_update" accept="image/*" onChange={handleImageChange} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
+                            {imagePreview && (
+                                <div className="mt-4">
+                                    <img src={imagePreview} alt="Product Preview" className="max-h-48 rounded-lg border border-gray-300 p-1"/>
+                                </div>
+                            )}
+                        </div>
+
+                    </div>
+                    <div className="px-6 py-4 bg-gray-50 border-t flex justify-end items-center space-x-4 sticky bottom-0 z-10">
+                        <button type="button" onClick={onClose} className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                            Cancel
+                        </button>
+                        <button type="submit" disabled={submitting} className="inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:bg-purple-300">
+                             {submitting ? <><Spinner size="sm" /> Updating...</> : 'Save Changes'}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+const InputField = ({label, name, value, onChange, type = 'text', disabled = false, placeholder = ''}) => (
+    <div>
+        <label className="block text-sm font-medium text-gray-700">{label}</label>
+        <input 
+            type={type} 
+            name={name} 
+            value={value || ''} 
+            onChange={onChange} 
+            disabled={disabled}
+            placeholder={placeholder}
+            className={`mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${disabled ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+        />
+    </div>
+);
+
+
+// === From components/ServiceDataTable.tsx ===
+const normalizeDateString = (dateInput) => {
+    if (!dateInput) return '';
+    const dateStr = String(dateInput).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+        return dateStr.substring(0, 10);
+    }
+    return '';
+};
+const getStatusColor = (status) => {
+    switch (status) {
+        case 'New': return 'bg-blue-100 text-blue-800';
+        case 'In Service': return 'bg-yellow-100 text-yellow-800';
+        case 'Completed': return 'bg-green-100 text-green-800';
+        case 'Informed to Customer': return 'bg-indigo-100 text-indigo-800';
+        case 'Delivered to Customer': return 'bg-gray-100 text-gray-800';
+        default: return 'bg-gray-100 text-gray-800';
+    }
+}
+const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
+    const [services, setServices] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [searchTerm, setSearchTerm] = useState('');
+    const [previewImageUrl, setPreviewImageUrl] = useState(null);
+    const [statusFilter, setStatusFilter] = useState('All');
+    const [servicemanFilter, setServicemanFilter] = useState('All');
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
+    const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'descending' });
+    useEffect(() => {
+        const fetchServices = async () => {
+            setLoading(true);
+            setError(null);
+            try {
+                const data = await getAllServices();
+                const processedData = data
+                    .filter(row => row && row.slipNo && !isNaN(parseInt(String(row.slipNo), 10)))
+                    .map(service => ({
+                        ...service,
+                        date: normalizeDateString(service.date),
+                        warrantyDate: normalizeDateString(service.warrantyDate),
+                    }));
+                setServices(processedData);
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+                setError(`Failed to fetch services: ${errorMessage}`);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchServices();
+    }, [refreshKey]);
+    const servicemen = useMemo(() => {
+        const names = new Set(services.map(s => s.servicemanName).filter(name => name && name.trim() !== ''));
+        return ['All', ...Array.from(names).sort()];
+    }, [services]);
+    const sortedAndFilteredServices = useMemo(() => {
+        let filteredData = [...services];
+        if (statusFilter !== 'All') {
+            filteredData = filteredData.filter(s => s.serviceStatus === statusFilter);
+        }
+        if (servicemanFilter !== 'All') {
+            filteredData = filteredData.filter(s => s.servicemanName === servicemanFilter);
+        }
+        if (startDate || endDate) {
+            filteredData = filteredData.filter(s => {
+                if (!s.date) return false;
+                const serviceDateStr = s.date;
+                if (startDate && serviceDateStr < startDate) return false;
+                if (endDate && serviceDateStr > endDate) return false;
+                return true;
+            });
+        }
+        if (searchTerm) {
+            const lowercasedFilter = searchTerm.toLowerCase();
+            filteredData = filteredData.filter(service =>
+                Object.values(service).some(value =>
+                    String(value).toLowerCase().includes(lowercasedFilter)
+                )
+            );
+        }
+        if (sortConfig.key) {
+            filteredData.sort((a, b) => {
+                const aVal = a[sortConfig.key];
+                const bVal = b[sortConfig.key];
+                if (aVal === null || aVal === undefined) return 1;
+                if (bVal === null || bVal === undefined) return -1;
+                let comparison = 0;
+                if (sortConfig.key === 'slipNo' || sortConfig.key === 'estimateAmount') {
+                    comparison = parseInt(String(aVal) || '0', 10) - parseInt(String(bVal) || '0', 10);
+                } else {
+                    comparison = String(aVal).toLowerCase().localeCompare(String(bVal).toLowerCase());
+                }
+                return sortConfig.direction === 'ascending' ? comparison : -comparison;
+            });
+        }
+        return filteredData;
+    }, [services, searchTerm, statusFilter, servicemanFilter, startDate, endDate, sortConfig]);
+    const requestSort = (key) => {
+        let direction = 'ascending';
+        if (sortConfig.key === key && sortConfig.direction === 'ascending') {
+            direction = 'descending';
+        }
+        setSortConfig({ key, direction });
+    };
+    const getSortIcon = (key) => {
+        if (sortConfig.key !== key) {
+            return <i className="fas fa-sort text-gray-400 ml-1"></i>;
+        }
+        if (sortConfig.direction === 'ascending') {
+            return <i className="fas fa-sort-up ml-1 text-gray-800"></i>;
+        }
+        return <i className="fas fa-sort-down ml-1 text-gray-800"></i>;
+    };
+    const handleImageClick = (imageUrl) => {
+        setPreviewImageUrl(getDirectGoogleDriveImageUrl(imageUrl));
+    };
+    const handleClosePreview = () => {
+        setPreviewImageUrl(null);
+    };
+    if (loading) {
+        return (
+            <div className="flex justify-center items-center h-64">
+                <Spinner size="lg" />
+            </div>
+        );
+    }
+    if (error) {
+        return <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>;
+    }
+    return (
+        <div className="bg-white p-4 sm:p-6 lg:p-8 rounded-2xl shadow-lg">
+            <h2 className="text-3xl font-bold text-gray-800 mb-6">Service Data</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-4">
+                <input
+                    type="text"
+                    placeholder="Search all fields..."
+                    value={searchTerm}
+                    onChange={e => setSearchTerm(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 lg:col-span-2"
+                />
+                <select
+                    value={statusFilter}
+                    onChange={e => setStatusFilter(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 bg-white"
+                >
+                    <option value="All">All Statuses</option>
+                    {Object.values(ServiceStatus).map(status => (
+                        <option key={status} value={status}>{status}</option>
+                    ))}
+                </select>
+                <select
+                    value={servicemanFilter}
+                    onChange={e => setServicemanFilter(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 bg-white"
+                >
+                    {servicemen.map(name => (
+                         <option key={name} value={name}>{name === 'All' ? 'All Servicemen' : name}</option>
+                    ))}
+                </select>
+                <div className="grid grid-cols-2 gap-2">
+                    <input
+                        type="date"
+                        value={startDate}
+                        onChange={e => setStartDate(e.target.value)}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                        title="Filter by start date"
+                    />
+                    <input
+                        type="date"
+                        value={endDate}
+                        onChange={e => setEndDate(e.target.value)}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                        title="Filter by end date"
+                    />
+                </div>
+            </div>
+            <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                        <tr>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Image</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => requestSort('slipNo')}>
+                                Slip No {getSortIcon('slipNo')}
+                            </th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => requestSort('date')}>
+                                Date {getSortIcon('date')}
+                            </th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => requestSort('customerName')}>
+                                Customer {getSortIcon('customerName')}
+                            </th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => requestSort('productName')}>
+                                Product {getSortIcon('productName')}
+                            </th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => requestSort('servicemanName')}>
+                                Serviceman {getSortIcon('servicemanName')}
+                            </th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Service Type</th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100" onClick={() => requestSort('serviceStatus')}>
+                                Status {getSortIcon('serviceStatus')}
+                            </th>
+                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                        {sortedAndFilteredServices.map(service => (
+                            <tr key={service.serviceId || service.rowIndex}>
+                                <td className="px-4 py-4 whitespace-nowrap">
+                                    <img
+                                        src={getDirectGoogleDriveImageUrl(service.imageUrl)}
+                                        alt={service.productName}
+                                        className="w-12 h-12 object-cover rounded-md cursor-pointer hover:opacity-80 transition-opacity"
+                                        onClick={() => handleImageClick(service.imageUrl)}
+                                    />
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{service.slipNo}</td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{service.date}</td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                                    <div className="font-medium">{service.customerName}</div>
+                                    <div>{service.contact}</div>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
+                                    <div className="font-medium">{service.productName}</div>
+                                    <div>{service.brand}</div>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-500">{service.servicemanName || '-'}</td>
+                                <td className="px-4 py-4 text-sm text-gray-500 max-w-xs truncate" title={service.serviceType}>{service.serviceType}</td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm">
+                                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(service.serviceStatus)}`}>
+                                        {service.serviceStatus}
+                                    </span>
+                                </td>
+                                <td className="px-4 py-4 whitespace-nowrap text-sm font-medium">
+                                    <div className="flex items-center space-x-4">
+                                        <button onClick={() => onEdit(service)} className="text-purple-600 hover:text-purple-900 flex items-center" title="Edit service">
+                                            <i className="fas fa-pencil-alt"></i>
+                                        </button>
+                                        <button onClick={() => onDownload(service)} className="text-green-600 hover:text-green-900 flex items-center" title="Download Slip">
+                                            <i className="fas fa-download"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+                 {sortedAndFilteredServices.length === 0 && !loading && (
+                    <div className="text-center py-8 text-gray-500">
+                        <p className="font-semibold">No service records found.</p>
+                        <p className="text-sm mt-1">Try adjusting your search or filters.</p>
+                    </div>
+                )}
+            </div>
+            {previewImageUrl && <ImagePreviewModal imageUrl={previewImageUrl} onClose={handleClosePreview} />}
+        </div>
+    );
+};
+
+
+// === From components/ServiceEntryForm.tsx ===
+const initialFormData = {
+    date: new Date().toISOString().split('T')[0],
+    customerName: '',
+    contact: '',
+    productName: '',
+    brand: '',
+    color: '',
+    size: '',
+    estimateAmount: '',
+    warrantyInvoiceNumber: '',
+    warrantyDate: '',
+};
+const ServiceEntryForm = ({ onSuccess }) => {
+    const [formData, setFormData] = useState(initialFormData);
+    const [slipNo, setSlipNo] = useState('');
+    const [loadingSlip, setLoadingSlip] = useState(true);
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState(null);
+    const [imagePreview, setImagePreview] = useState(null);
+    const [imageFile, setImageFile] = useState(null);
+    const [selectedServices, setSelectedServices] = useState([]);
+    const [warrantyStatus, setWarrantyStatus] = useState('Non-Warranty');
+    const fetchSlip = useCallback(async () => {
+        setLoadingSlip(true);
+        try {
+            const lastSlip = await getLastSlipNumber();
+            setSlipNo((lastSlip + 1).toString());
+        } catch (err) {
+            setError('Failed to fetch slip number. Please try again.');
+            console.error(err);
+        } finally {
+            setLoadingSlip(false);
+        }
+    }, []);
+    useEffect(() => {
+        fetchSlip();
+    }, [fetchSlip]);
+    const handleInputChange = (e) => {
+        const { name, value } = e.target;
+        setFormData(prev => ({...prev, [name]: value}));
+    };
+    const handleImageChange = (e) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            setImageFile(file);
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                setImagePreview(reader.result);
+            };
+            reader.readAsDataURL(file);
+        } else {
+            setImageFile(null);
+            setImagePreview(null);
+        }
+    };
+    const fileToBase64 = (file) => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve((reader.result).split(',')[1]);
+            reader.onerror = error => reject(error);
+        });
+    };
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setSubmitting(true);
+        setError(null);
+        if (!imageFile) {
+            setError("Product image is required.");
+            setSubmitting(false);
+            return;
+        }
+        if (selectedServices.length === 0) {
+            setError("Please select at least one service description.");
+            setSubmitting(false);
+            return;
+        }
+        try {
+            const base64Image = await fileToBase64(imageFile);
+            const payload = {
+                date: formData.date,
+                slipNo: slipNo,
+                customerName: formData.customerName,
+                contact: formData.contact,
+                productName: formData.productName,
+                brand: formData.brand,
+                colorAndSize: `${formData.color} / ${formData.size}`,
+                serviceType: selectedServices.join(', '),
+                warrantyStatus: warrantyStatus,
+                estimateAmount: warrantyStatus === 'Non-Warranty' ? formData.estimateAmount : '',
+                warrantyInvoiceNumber: warrantyStatus === 'Warranty' ? formData.warrantyInvoiceNumber : '',
+                warrantyDate: warrantyStatus === 'Warranty' ? formData.warrantyDate : '',
+                image: base64Image,
+                imageName: imageFile.name,
+                imageMimeType: imageFile.type,
+                servicemanAmount: '',
+                customerPaidAmount: '',
+                invoiceNumber: '',
+            };
+            const response = await submitService(payload);
+            const { image, imageName, imageMimeType, ...serviceDataFromPayload } = payload;
+            const newServiceData = {
+                ...serviceDataFromPayload,
+                serviceId: response.serviceId,
+                rowIndex: 0,
+                serviceStatus: 'New',
+                imageUrl: imagePreview || '',
+                servicemanName: '',
+            };
+            (e.target).reset();
+            setFormData(initialFormData);
+            setSelectedServices([]);
+            setImagePreview(null);
+            setImageFile(null);
+            fetchSlip();
+            onSuccess(newServiceData);
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+            setError(`Submission failed: ${errorMessage}`);
+            console.error(err);
+        } finally {
+            setSubmitting(false);
+        }
+    };
+    const serviceOptions = [
+        "Stitching", "Zip Repair/Replacement", "Runner Replacement", "Handle Repair/Replacement", 
+        "Strolly Wheel/Handle Repair", "Buckle Repair/Replacement", "Professional Cleaning", 
+        "Strap Adjustment/Replacement", "Lock Repair/Replacement", "Bags"
+    ];
+    return (
+         <div className="max-w-4xl mx-auto bg-white p-8 rounded-2xl shadow-lg">
+            <h2 className="text-3xl font-bold text-gray-800 mb-2 text-center">New Service Entry</h2>
+            <p className="text-center text-gray-500 mb-8">Fill in the details below to create a new service request.</p>
+            
+            <form onSubmit={handleSubmit} className="space-y-6">
+                 {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>}
+                
+                <div className="p-6 border border-gray-200 rounded-lg">
+                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-info-circle mr-3 text-purple-500"></i>General Details</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label htmlFor="date" className="block text-sm font-medium text-gray-700">Date *</label>
+                            <input type="date" name="date" id="date" value={formData.date} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                        <div>
+                            <label htmlFor="slipNo" className="block text-sm font-medium text-gray-700">Slip No</label>
+                             <div className="mt-1 flex items-center w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-md">
+                                {loadingSlip ? <Spinner size="sm" /> : <span className="text-gray-800">{slipNo}</span>}
+                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="p-6 border border-gray-200 rounded-lg">
+                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-user-tag mr-3 text-purple-500"></i>Customer & Product Information</h3>
+                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <label htmlFor="customerName" className="block text-sm font-medium text-gray-700">Customer Name *</label>
+                            <input type="text" name="customerName" id="customerName" value={formData.customerName} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                         <div>
+                            <label htmlFor="contact" className="block text-sm font-medium text-gray-700">Contact Number *</label>
+                            <input type="tel" name="contact" id="contact" value={formData.contact} onChange={handleInputChange} required pattern="[0-9]{10,}" className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                        <div>
+                            <label htmlFor="productName" className="block text-sm font-medium text-gray-700">Product Name</label>
+                            <input type="text" name="productName" id="productName" value={formData.productName} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                        <div>
+                            <label htmlFor="brand" className="block text-sm font-medium text-gray-700">Brand</label>
+                            <input type="text" name="brand" id="brand" value={formData.brand} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                        <div>
+                            <label htmlFor="color" className="block text-sm font-medium text-gray-700">Color</label>
+                            <input type="text" name="color" id="color" value={formData.color} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                        <div>
+                            <label htmlFor="size" className="block text-sm font-medium text-gray-700">Size</label>
+                            <input type="text" name="size" id="size" value={formData.size} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                     </div>
+                </div>
+
+                <div className="p-6 border border-gray-200 rounded-lg">
+                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-tools mr-3 text-purple-500"></i>Service Description *</h3>
+                     <MultiSelectDropdown
+                        options={serviceOptions}
+                        selectedOptions={selectedServices}
+                        onChange={setSelectedServices}
+                        placeholder="Select required services..."
+                    />
+                </div>
+
+                <div className="p-6 border border-gray-200 rounded-lg">
+                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-shield-alt mr-3 text-purple-500"></i>Warranty Status</h3>
+                    <select value={warrantyStatus} onChange={e => setWarrantyStatus(e.target.value)} className="block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
+                        <option value="Non-Warranty">Non-Warranty</option>
+                        <option value="Warranty">Warranty</option>
+                    </select>
+                    
+                    {warrantyStatus === 'Non-Warranty' && (
+                        <div className="mt-4">
+                            <label htmlFor="estimateAmount" className="block text-sm font-medium text-gray-700">Estimate Amount *</label>
+                            <input type="number" name="estimateAmount" id="estimateAmount" value={formData.estimateAmount} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                        </div>
+                    )}
+
+                    {warrantyStatus === 'Warranty' && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+                            <div>
+                                <label htmlFor="warrantyInvoiceNumber" className="block text-sm font-medium text-gray-700">Warranty Invoice Number *</label>
+                                <input type="text" name="warrantyInvoiceNumber" id="warrantyInvoiceNumber" value={formData.warrantyInvoiceNumber} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                            </div>
+                            <div>
+                                <label htmlFor="warrantyDate" className="block text-sm font-medium text-gray-700">Warranty Date *</label>
+                                <input type="date" name="warrantyDate" id="warrantyDate" value={formData.warrantyDate} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div className="p-6 border border-gray-200 rounded-lg">
+                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-camera mr-3 text-purple-500"></i>Product Image *</h3>
+                    <input type="file" name="image" id="image" accept="image/*" capture="environment" onChange={handleImageChange} required className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
+                    {imagePreview && (
+                        <div className="mt-4">
+                            <img src={imagePreview} alt="Product Preview" className="max-h-48 rounded-lg border border-gray-300 p-1"/>
+                        </div>
+                    )}
+                </div>
+
+                <div className="flex justify-center">
+                    <button type="submit" disabled={submitting || loadingSlip} className="w-full md:w-auto flex justify-center items-center py-3 px-6 border border-transparent rounded-md shadow-sm text-base font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:bg-purple-300 disabled:cursor-not-allowed">
+                        {submitting ? <><Spinner size="sm" /> Submitting...</> : 'Submit Service Request'}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+
+// === From components/Sidebar.tsx ===
+const NavLink = ({ page, currentPage, onNavigate, icon, label }) => {
+    const isActive = currentPage === page;
+    return (
+        <li>
+            <a
+                href="#"
+                onClick={(e) => {
+                    e.preventDefault();
+                    onNavigate();
+                }}
+                className={`flex items-center p-4 text-base font-normal rounded-lg transition duration-75 group ${
+                    isActive
+                        ? 'bg-purple-700 text-white'
+                        : 'text-purple-100 hover:bg-purple-700'
+                }`}
+            >
+                <i className={`${icon} w-6 h-6 text-purple-200 transition duration-75 group-hover:text-white`}></i>
+                <span className="ml-3">{label}</span>
+            </a>
+        </li>
+    );
+};
+const Sidebar = ({ currentPage, navigate, isOpen, setIsOpen }) => {
+    const handleNavigate = (page) => {
+        navigate(page);
+        setIsOpen(false);
+    };
+    return (
+        <>
+            <div
+                className={`fixed inset-0 bg-black bg-opacity-50 z-30 md:hidden transition-opacity ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                onClick={() => setIsOpen(false)}
+                aria-hidden="true"
+            ></div>
+            <aside className={`fixed inset-y-0 left-0 z-40 w-64 h-full bg-gradient-to-b from-purple-800 to-indigo-900 shadow-lg text-white flex flex-col transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                <div className="flex items-center justify-between px-6 py-4 border-b border-purple-700">
+                    <div className="flex items-center space-x-3">
+                        <div className="bg-purple-600 p-2 rounded-lg">
+                            <i className="fas fa-tools text-white text-xl fa-fw"></i>
+                        </div>
+                        <span className="text-xl font-bold text-white">Roshan Bags</span>
+                    </div>
+                    <button onClick={() => setIsOpen(false)} className="text-purple-100 hover:text-white md:hidden" aria-label="Close sidebar">
+                         <i className="fas fa-times fa-lg"></i>
+                    </button>
+                </div>
+                <nav className="flex-1 px-4 py-4">
+                    <ul className="space-y-2">
+                        <NavLink page="entry" currentPage={currentPage} onNavigate={() => handleNavigate('entry')} icon="fas fa-clipboard-list" label="Service Entry" />
+                        <NavLink page="data" currentPage={currentPage} onNavigate={() => handleNavigate('data')} icon="fas fa-database" label="Service Data" />
+                    </ul>
+                </nav>
+            </aside>
+        </>
+    );
+};
+
+
+// === From App.tsx ===
+const App = () => {
+    const [currentPage, setCurrentPage] = useState('entry');
+    const [selectedService, setSelectedService] = useState(null);
+    const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+    const [refreshDataKey, setRefreshDataKey] = useState(0);
+    const [showSlipFor, setShowSlipFor] = useState(null);
+    const [serviceToDownload, setServiceToDownload] = useState(null);
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+    const downloadSlipRef = useRef(null);
+    const handleEditService = (service) => {
+        setSelectedService(service);
+        setIsUpdateModalOpen(true);
+    };
+    const handleCloseModal = () => {
+        setSelectedService(null);
+        setIsUpdateModalOpen(false);
+    };
+    const handleUpdateSuccess = () => {
+        handleCloseModal();
+        setRefreshDataKey(prevKey => prevKey + 1);
+    };
+    const handleNewServiceSuccess = (newService) => {
+        setShowSlipFor(newService);
+    };
+    const handleCloseSlipModal = () => {
+        setShowSlipFor(null);
+        setRefreshDataKey(prevKey => prevKey + 1);
+        setCurrentPage('data');
+    };
+    const handleDownloadRequest = (service) => {
+        setServiceToDownload(service);
+    };
+    useEffect(() => {
+        if (serviceToDownload && downloadSlipRef.current) {
+            const generatePdf = async () => {
+                await downloadSlipAsPdf(
+                    downloadSlipRef.current, 
+                    'a4', 
+                    serviceToDownload.slipNo,
+                    serviceToDownload.customerName
+                );
+                setServiceToDownload(null);
+            };
+            setTimeout(generatePdf, 100); 
+        }
+    }, [serviceToDownload]);
+    const navigate = (page) => {
+        setCurrentPage(page);
+    };
+    return (
+        <div className="flex h-screen bg-gray-100 font-sans">
+            <Sidebar 
+                currentPage={currentPage} 
+                navigate={navigate} 
+                isOpen={isSidebarOpen} 
+                setIsOpen={setIsSidebarOpen}
+            />
+             <div className="flex-1 flex flex-col overflow-hidden">
+                <header className="bg-white shadow p-4 flex justify-between items-center md:hidden">
+                    <h1 className="text-xl font-bold text-gray-800">
+                        {currentPage === 'entry' ? 'Service Entry' : 'Service Data'}
+                    </h1>
+                    <button 
+                        onClick={() => setIsSidebarOpen(true)}
+                        className="text-gray-600 focus:outline-none"
+                        aria-label="Open sidebar"
+                    >
+                        <i className="fas fa-bars fa-lg"></i>
+                    </button>
+                </header>
+                <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+                    {currentPage === 'entry' && <ServiceEntryForm onSuccess={handleNewServiceSuccess} />}
+                    {currentPage === 'data' && <ServiceDataTable onEdit={handleEditService} onDownload={handleDownloadRequest} refreshKey={refreshDataKey} />}
+                </main>
+            </div>
+            {isUpdateModalOpen && selectedService && (
+                <UpdateServiceModal
+                    isOpen={isUpdateModalOpen}
+                    service={selectedService}
+                    onClose={handleCloseModal}
+                    onSuccess={handleUpdateSuccess}
+                />
+            )}
+            {showSlipFor && (
+                <ServiceSlipModal
+                    service={showSlipFor}
+                    onClose={handleCloseSlipModal}
+                />
+            )}
+            {serviceToDownload && (
+                <div style={{ position: 'absolute', left: '-9999px', top: 0, zIndex: -100, width: '800px' }} className="bg-white">
+                    <div ref={downloadSlipRef}>
+                        <PrintableSlip service={serviceToDownload} />
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+
+// === From index.tsx (The final render call) ===
+const rootElement = document.getElementById('root');
+if (!rootElement) {
+  throw new Error("Could not find root element to mount to");
+}
+const root = ReactDOM.createRoot(rootElement);
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// --- End of consolidated application code ---
+    </script>
+  </body>
+</html>
