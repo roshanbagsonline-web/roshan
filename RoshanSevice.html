@@ -14,10 +14,8 @@
   <script type="importmap">
 {
   "imports": {
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "react-dom/client": "https://aistudiocdn.com/react-dom@^19.2.0/client"
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client"
   }
 }
 </script>
@@ -201,7 +199,7 @@ const compressImage = (file, maxWidth = 1024, maxHeight = 1024, quality = 0.8) =
 
 
 // === From services/googleSheetService.ts ===
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDHRcCXcJLeF_2OMk5Pcuf_NNwXRlnPXOZCVpS7zVwN6saQr_QLzJ2VzO9FczJSuJB2w/exec";
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxIcoZKiNvcuJMQ11L3kTxrhRmYIVRn4WW2vjozVlkF4Bwf8wouI3w7TIlSeAE3KUFbRw/exec";
 async function apiRequest(action, method = 'GET', payload) {
     const url = new URL(SCRIPT_URL);
     if (method === 'GET') {
@@ -541,16 +539,15 @@ const DownloadButton = ({ format, service, slipRef }) => {
         setGenerating(true);
         try {
             const blob = await generatePdfBlob(slipRef.current, format);
-            const url = URL.createObjectURL(blob);
-            const filename = `${service.customerName.replace(/ /g, '_')}_${service.slipNo}.pdf`;
+            const filename = `${(service.customerName || 'payout').replace(/ /g, '_')}_${service.slipNo}.pdf`;
             
             const a = document.createElement('a');
-            a.href = url;
+            a.href = URL.createObjectURL(blob);
             a.download = filename;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            URL.revokeObjectURL(a.href);
 
         } catch (error) {
             console.error(`Failed to generate ${format} PDF:`, error);
@@ -665,8 +662,8 @@ const SERVICE_OPTIONS = [
 ];
 
 
-// === From components/UpdateServiceModal.tsx ===
-const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
+// === From components/UpdateServiceModal.tsx (UPDATED) ===
+const UpdateServiceModal = ({ service, servicemenNames, isOpen, onClose, onSuccess }) => {
     const [formData, setFormData] = useState(service);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState(null);
@@ -676,6 +673,9 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
     const [selectedServices, setSelectedServices] = useState([]);
     const [color, setColor] = useState('');
     const [size, setSize] = useState('');
+
+    const isReadOnly = useMemo(() => service?.customerName !== '--SKIPPED--', [service]);
+
     useEffect(() => {
         if (service) {
             setFormData(service);
@@ -689,6 +689,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
             setSize(sizeVal);
         }
     }, [service]);
+
     const suggestedPrice = useMemo(() => {
         const SETTINGS_KEY = 'serviceHubPro_settings';
         let markupPercentage = 30; // Default value
@@ -708,16 +709,17 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
         const amount = parseFloat(formData.servicemanAmount);
         if (!isNaN(amount) && amount > 0) {
             const calculatedPrice = amount * (1 + markupPercentage / 100);
-            // Round up to the nearest 10
             const roundedPrice = Math.ceil(calculatedPrice / 10) * 10;
             return roundedPrice.toFixed(0);
         }
         return null;
     }, [formData.servicemanAmount]);
+
     const handleChange = (e) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
     };
+
     const handleImageChange = async (e) => {
         const file = e.target.files?.[0];
         if (file) {
@@ -743,6 +745,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
             }
         }
     };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setSubmitting(true);
@@ -755,6 +758,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
                 serviceType: selectedServices.join(', '),
                 colorAndSize: `${color} / ${size}`
             };
+
             if (newImageData) {
                 payload.image = newImageData.base64;
                 payload.imageName = newImageData.name;
@@ -787,24 +791,24 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
                         </button>
                     </div>
                 </div>
-                <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+                <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto" key={service.serviceId || service.rowIndex}>
                     <div className="p-6 space-y-6">
                         {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>}
                         
                         <div className="p-6 border border-gray-200 rounded-lg">
-                            <h3 className="text-lg font-semibold text-gray-700 mb-4">Customer & Product Information <span className="text-sm font-normal text-gray-500">(Read-Only)</span></h3>
+                            <h3 className="text-lg font-semibold text-gray-700 mb-4">Customer & Product Information <span className="text-sm font-normal text-gray-500">{isReadOnly ? '(Read-Only)' : '(Editable)'}</span></h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                <InputField label="Customer Name" name="customerName" value={formData.customerName} onChange={handleChange} disabled />
-                                <InputField label="Contact" name="contact" value={formData.contact} onChange={handleChange} disabled />
-                                <InputField label="Product Name" name="productName" value={formData.productName} onChange={handleChange} disabled />
-                                <InputField label="Brand" name="brand" value={formData.brand} onChange={handleChange} disabled />
+                                <InputField label="Customer Name" name="customerName" value={formData.customerName} onChange={handleChange} disabled={isReadOnly} />
+                                <InputField label="Contact" name="contact" value={formData.contact} onChange={handleChange} disabled={isReadOnly} />
+                                <InputField label="Product Name" name="productName" value={formData.productName} onChange={handleChange} disabled={isReadOnly} />
+                                <InputField label="Brand" name="brand" value={formData.brand} onChange={handleChange} disabled={isReadOnly} />
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700">Color</label>
-                                    <input type="text" value={color} onChange={e => setColor(e.target.value)} disabled className="mt-1 block w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-md shadow-sm cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-purple-500"/>
+                                    <input type="text" value={color} onChange={e => setColor(e.target.value)} disabled={isReadOnly} className={`mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${isReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}/>
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700">Size</label>
-                                    <input type="text" value={size} onChange={e => setSize(e.target.value)} disabled className="mt-1 block w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-md shadow-sm cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-purple-500"/>
+                                    <input type="text" value={size} onChange={e => setSize(e.target.value)} disabled={isReadOnly} className={`mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${isReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}/>
                                 </div>
                             </div>
                         </div>
@@ -850,7 +854,12 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
                                 <div>
                                     <InputField label="Serviceman Amount" name="servicemanAmount" type="number" value={formData.servicemanAmount} onChange={handleChange} />
                                 </div>
-                                <InputField label="Serviceman Name" name="servicemanName" value={formData.servicemanName} onChange={handleChange} />
+                                <div>
+                                    <InputField label="Serviceman Name" name="servicemanName" value={formData.servicemanName} onChange={handleChange} list="servicemen-list" />
+                                    <datalist id="servicemen-list">
+                                        {servicemenNames.map(name => <option key={name} value={name} />)}
+                                    </datalist>
+                                </div>
                                 <InputField 
                                     label="Customer Paid Amount" 
                                     name="customerPaidAmount" 
@@ -888,7 +897,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
         </div>
     );
 };
-const InputField = ({label, name, value, onChange, type = 'text', disabled = false, placeholder = ''}) => (
+const InputField = ({label, name, value, onChange, type = 'text', disabled = false, placeholder = '', list = ''}) => (
     <div>
         <label className="block text-sm font-medium text-gray-700">{label}</label>
         <input 
@@ -898,6 +907,7 @@ const InputField = ({label, name, value, onChange, type = 'text', disabled = fal
             onChange={onChange} 
             disabled={disabled}
             placeholder={placeholder}
+            list={list}
             className={`mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${disabled ? 'bg-gray-100 cursor-not-allowed' : ''}`}
         />
     </div>
@@ -923,7 +933,7 @@ const getStatusColor = (status) => {
         default: return 'bg-gray-100 text-gray-800';
     }
 }
-const ServiceDataTable = ({ services, onEdit, onDownload, initialFilters }) => {
+const ServiceDataTable = ({ services, onEdit, onDownload, onComplete, initialFilters }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [slipNoFilter, setSlipNoFilter] = useState('');
     const [previewImageUrl, setPreviewImageUrl] = useState(null);
@@ -946,9 +956,13 @@ const ServiceDataTable = ({ services, onEdit, onDownload, initialFilters }) => {
 
     const sortedAndFilteredServices = useMemo(() => {
         let filteredData = [...services];
-        if (statusFilter !== 'All') {
+        
+        if (Array.isArray(statusFilter) && statusFilter.length > 0) {
+            filteredData = filteredData.filter(s => statusFilter.includes(s.serviceStatus));
+        } else if (typeof statusFilter === 'string' && statusFilter !== 'All') {
             filteredData = filteredData.filter(s => s.serviceStatus === statusFilter);
         }
+
         if (servicemanFilter !== 'All') {
             filteredData = filteredData.filter(s => s.servicemanName === servicemanFilter);
         }
@@ -1038,7 +1052,7 @@ const ServiceDataTable = ({ services, onEdit, onDownload, initialFilters }) => {
                     className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
                 />
                 <select
-                    value={statusFilter}
+                    value={typeof statusFilter === 'string' ? statusFilter : 'All'}
                     onChange={e => setStatusFilter(e.target.value)}
                     className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 bg-white"
                 >
@@ -1131,9 +1145,15 @@ const ServiceDataTable = ({ services, onEdit, onDownload, initialFilters }) => {
                                 </td>
                                 <td className="px-4 py-4 whitespace-nowrap text-sm font-medium">
                                     <div className="flex items-center space-x-4">
-                                        <button onClick={() => onEdit(service)} className="text-purple-600 hover:text-purple-900 flex items-center" title="Edit service">
-                                            <i className="fas fa-pencil-alt"></i>
-                                        </button>
+                                        {service.customerName === '--SKIPPED--' ? (
+                                            <button onClick={() => onComplete(service)} className="text-blue-600 hover:text-blue-900 flex items-center" title="Complete Skipped Entry">
+                                                <i className="fas fa-file-signature"></i>
+                                            </button>
+                                        ) : (
+                                            <button onClick={() => onEdit(service)} className="text-purple-600 hover:text-purple-900 flex items-center" title="Edit service">
+                                                <i className="fas fa-pencil-alt"></i>
+                                            </button>
+                                        )}
                                         <button onClick={() => onDownload(service)} className="text-green-600 hover:text-green-900 flex items-center" title="Download Slip">
                                             <i className="fas fa-download"></i>
                                         </button>
@@ -1156,7 +1176,7 @@ const ServiceDataTable = ({ services, onEdit, onDownload, initialFilters }) => {
 };
 
 
-// === From components/ServiceEntryForm.tsx ===
+// === From components/ServiceEntryForm.tsx (UPDATED with BUG FIX) ===
 const initialFormData = {
     date: new Date().toISOString().split('T')[0],
     customerName: '',
@@ -1169,9 +1189,10 @@ const initialFormData = {
     warrantyInvoiceNumber: '',
     warrantyDate: '',
 };
-const ServiceEntryForm = ({ onSuccess }) => {
+const ServiceEntryForm = ({ onSuccess, onCompletionSuccess, serviceToComplete: serviceToCompleteProp }) => {
     const [formData, setFormData] = useState(initialFormData);
     const [slipNo, setSlipNo] = useState('');
+    const [fetchedSlipNo, setFetchedSlipNo] = useState(null);
     const [loadingSlip, setLoadingSlip] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState(null);
@@ -1180,11 +1201,30 @@ const ServiceEntryForm = ({ onSuccess }) => {
     const [compressing, setCompressing] = useState(false);
     const [selectedServices, setSelectedServices] = useState([]);
     const [warrantyStatus, setWarrantyStatus] = useState('Non-Warranty');
+    const [isCompletionMode, setIsCompletionMode] = useState(false);
+    const [serviceToComplete, setServiceToComplete] = useState(null);
+
+    const resetForm = useCallback((newSlip) => {
+        setFormData(initialFormData);
+        setSlipNo(newSlip ? newSlip.toString() : '');
+        setSelectedServices([]);
+        setImageData(null);
+        setImagePreview(null);
+        setWarrantyStatus('Non-Warranty');
+        setError(null);
+        setIsCompletionMode(false);
+        setServiceToComplete(null);
+        const formElement = document.getElementById('service-entry-form');
+        if (formElement) formElement.reset();
+    }, []);
+
     const fetchSlip = useCallback(async () => {
         setLoadingSlip(true);
         try {
             const lastSlip = await getLastSlipNumber();
-            setSlipNo((lastSlip + 1).toString());
+            const nextSlip = lastSlip + 1;
+            setSlipNo(nextSlip.toString());
+            setFetchedSlipNo(nextSlip);
         } catch (err) {
             setError('Failed to fetch slip number. Please try again.');
             console.error(err);
@@ -1192,13 +1232,34 @@ const ServiceEntryForm = ({ onSuccess }) => {
             setLoadingSlip(false);
         }
     }, []);
+
+    const setupCompletionMode = (service) => {
+        setIsCompletionMode(true);
+        setServiceToComplete(service);
+        setLoadingSlip(false);
+        setSlipNo(service.slipNo);
+        setFetchedSlipNo(null); // Not relevant in completion mode
+        setFormData(initialFormData); // Start with a fresh form
+        setSelectedServices([]);
+        setImageData(null);
+        setImagePreview(null);
+        setWarrantyStatus('Non-Warranty');
+        setError(null);
+    };
+
     useEffect(() => {
-        fetchSlip();
-    }, [fetchSlip]);
+        if (serviceToCompleteProp) {
+            setupCompletionMode(serviceToCompleteProp);
+        } else {
+            fetchSlip();
+        }
+    }, [serviceToCompleteProp, fetchSlip]);
+    
     const handleInputChange = (e) => {
         const { name, value } = e.target;
         setFormData(prev => ({...prev, [name]: value}));
     };
+    
     const handleImageChange = async (e) => {
         const file = e.target.files?.[0];
         if (file) {
@@ -1226,6 +1287,33 @@ const ServiceEntryForm = ({ onSuccess }) => {
             setImagePreview(null);
         }
     };
+    
+    const createPlaceholderPayload = (slip) => {
+        const PLACEHOLDER_IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+        return {
+            date: new Date().toISOString().split('T')[0],
+            slipNo: slip.toString(),
+            customerName: '--SKIPPED--',
+            contact: '',
+            productName: '',
+            brand: '',
+            colorAndSize: '',
+            serviceType: '',
+            warrantyStatus: 'Non-Warranty',
+            estimateAmount: '',
+            warrantyInvoiceNumber: '',
+            warrantyDate: '',
+            serviceStatus: 'New',
+            servicemanAmount: '',
+            customerPaidAmount: '',
+            invoiceNumber: '',
+            servicemanName: '',
+            image: PLACEHOLDER_IMAGE_BASE64,
+            imageName: 'placeholder.png',
+            imageMimeType: 'image/png',
+        };
+    };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setSubmitting(true);
@@ -1240,44 +1328,89 @@ const ServiceEntryForm = ({ onSuccess }) => {
             setSubmitting(false);
             return;
         }
+
         try {
-            const payload = {
-                date: formData.date,
-                slipNo: slipNo,
-                customerName: formData.customerName,
-                contact: formData.contact,
-                productName: formData.productName,
-                brand: formData.brand,
-                colorAndSize: `${formData.color} / ${formData.size}`,
-                serviceType: selectedServices.join(', '),
-                warrantyStatus: warrantyStatus,
-                estimateAmount: warrantyStatus === 'Non-Warranty' ? formData.estimateAmount : '',
-                warrantyInvoiceNumber: warrantyStatus === 'Warranty' ? formData.warrantyInvoiceNumber : '',
-                warrantyDate: warrantyStatus === 'Warranty' ? formData.warrantyDate : '',
-                image: imageData.base64,
-                imageName: imageData.name,
-                imageMimeType: imageData.mimeType,
-                servicemanAmount: '',
-                customerPaidAmount: '',
-                invoiceNumber: '',
-            };
-            const response = await submitService(payload);
-            const { image, imageName, imageMimeType, ...serviceDataFromPayload } = payload;
-            const newServiceData = {
-                ...serviceDataFromPayload,
-                serviceId: response.serviceId,
-                rowIndex: 0,
-                serviceStatus: 'New',
-                imageUrl: imagePreview || '',
-                servicemanName: '',
-            };
-            (e.target).reset();
-            setFormData(initialFormData);
-            setSelectedServices([]);
-            setImagePreview(null);
-            setImageData(null);
-            fetchSlip();
-            onSuccess(newServiceData);
+            if (isCompletionMode) {
+                // [BUG FIX]: Create the payload explicitly instead of spreading the old object.
+                // This ensures that new, user-entered data is sent for all relevant fields.
+                const payload = {
+                    rowIndex: serviceToComplete.rowIndex, // Essential for identifying the row to update
+                    serviceId: serviceToComplete.serviceId, // Also good to have for consistency
+                    
+                    // All new data captured from the form
+                    date: formData.date,
+                    customerName: formData.customerName,
+                    contact: formData.contact,
+                    productName: formData.productName,
+                    brand: formData.brand,
+                    colorAndSize: `${formData.color} / ${formData.size}`,
+                    serviceType: selectedServices.join(', '),
+                    warrantyStatus: warrantyStatus,
+                    estimateAmount: warrantyStatus === 'Non-Warranty' ? formData.estimateAmount : '',
+                    warrantyInvoiceNumber: warrantyStatus === 'Warranty' ? formData.warrantyInvoiceNumber : '',
+                    warrantyDate: warrantyStatus === 'Warranty' ? formData.warrantyDate : '',
+                    image: imageData.base64,
+                    imageName: imageData.name,
+                    imageMimeType: imageData.mimeType,
+                    serviceStatus: 'New', // Always reset status on completion
+                };
+                
+                await updateService(payload);
+                alert('Service entry completed successfully!');
+                resetForm();
+                onCompletionSuccess();
+
+            } else {
+                const enteredSlipNo = parseInt(slipNo, 10);
+                if (isNaN(enteredSlipNo) || enteredSlipNo < fetchedSlipNo) {
+                    setError(`Slip number cannot be less than the next available number (${fetchedSlipNo}).`);
+                    setSubmitting(false);
+                    return;
+                }
+
+                // Create placeholder entries if slip number was skipped
+                if (enteredSlipNo > fetchedSlipNo) {
+                    for (let i = fetchedSlipNo; i < enteredSlipNo; i++) {
+                        await submitService(createPlaceholderPayload(i));
+                    }
+                }
+
+                const payload = {
+                    date: formData.date,
+                    slipNo: slipNo,
+                    customerName: formData.customerName,
+                    contact: formData.contact,
+                    productName: formData.productName,
+                    brand: formData.brand,
+                    colorAndSize: `${formData.color} / ${formData.size}`,
+                    serviceType: selectedServices.join(', '),
+                    warrantyStatus: warrantyStatus,
+                    estimateAmount: warrantyStatus === 'Non-Warranty' ? formData.estimateAmount : '',
+                    warrantyInvoiceNumber: warrantyStatus === 'Warranty' ? formData.warrantyInvoiceNumber : '',
+                    warrantyDate: warrantyStatus === 'Warranty' ? formData.warrantyDate : '',
+                    image: imageData.base64,
+                    imageName: imageData.name,
+                    imageMimeType: imageData.mimeType,
+                    serviceStatus: 'New',
+                    servicemanAmount: '',
+                    customerPaidAmount: '',
+                    invoiceNumber: '',
+                    servicemanName: '',
+                };
+                const response = await submitService(payload);
+                const { image, imageName, imageMimeType, ...serviceDataFromPayload } = payload;
+                const newServiceData = {
+                    ...serviceDataFromPayload,
+                    serviceId: response.serviceId,
+                    rowIndex: response.rowIndex, // Assume API returns this
+                    imageUrl: imagePreview || '',
+                };
+                
+                const nextSlip = enteredSlipNo + 1;
+                resetForm(nextSlip);
+                setFetchedSlipNo(nextSlip);
+                onSuccess(newServiceData);
+            }
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
             setError(`Submission failed: ${errorMessage}`);
@@ -1289,10 +1422,14 @@ const ServiceEntryForm = ({ onSuccess }) => {
     
     return (
          <div className="max-w-4xl mx-auto bg-white p-8 rounded-2xl shadow-lg">
-            <h2 className="text-3xl font-bold text-gray-800 mb-2 text-center">New Service Entry</h2>
-            <p className="text-center text-gray-500 mb-8">Fill in the details below to create a new service request.</p>
+            <h2 className="text-3xl font-bold text-gray-800 mb-2 text-center">
+                {isCompletionMode ? `Complete Service Entry (Slip No: ${slipNo})` : 'New Service Entry'}
+            </h2>
+            <p className="text-center text-gray-500 mb-8">
+                {isCompletionMode ? 'Fill in the remaining details for this service request.' : 'Fill in the details below to create a new service request.'}
+            </p>
             
-            <form onSubmit={handleSubmit} className="space-y-6">
+            <form onSubmit={handleSubmit} id="service-entry-form" className="space-y-6">
                  {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>}
                 
                 <div className="p-6 border border-gray-200 rounded-lg">
@@ -1303,10 +1440,21 @@ const ServiceEntryForm = ({ onSuccess }) => {
                             <input type="date" name="date" id="date" value={formData.date} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
                         </div>
                         <div>
-                            <label htmlFor="slipNo" className="block text-sm font-medium text-gray-700">Slip No</label>
-                             <div className="mt-1 flex items-center w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded-md">
-                                {loadingSlip ? <Spinner size="sm" /> : <span className="text-gray-800">{slipNo}</span>}
-                             </div>
+                            <label htmlFor="slipNo" className="block text-sm font-medium text-gray-700">Slip No *</label>
+                            {loadingSlip ? (
+                                <div className="mt-1 flex items-center w-full h-10 px-3 py-2 bg-gray-100 border border-gray-300 rounded-md"><Spinner size="sm" /></div>
+                            ) : (
+                                <input 
+                                    type="number" 
+                                    name="slipNo" 
+                                    id="slipNo" 
+                                    value={slipNo} 
+                                    onChange={(e) => setSlipNo(e.target.value)} 
+                                    required
+                                    disabled={isCompletionMode}
+                                    className={`mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 ${isCompletionMode ? 'bg-gray-100' : ''}`}
+                                />
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1320,11 +1468,11 @@ const ServiceEntryForm = ({ onSuccess }) => {
                         </div>
                          <div>
                             <label htmlFor="contact" className="block text-sm font-medium text-gray-700">Contact Number *</label>
-                            <input type="tel" name="contact" id="contact" value={formData.contact} onChange={handleInputChange} required pattern="[0-9]{10,}" className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                            <input type="tel" name="contact" id="contact" value={formData.contact} onChange={handleInputChange} required pattern="[0-9]{10}" title="Please enter a 10-digit contact number" className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
                         </div>
                         <div>
-                            <label htmlFor="productName" className="block text-sm font-medium text-gray-700">Product Name</label>
-                            <input type="text" name="productName" id="productName" value={formData.productName} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                            <label htmlFor="productName" className="block text-sm font-medium text-gray-700">Product Name *</label>
+                            <input type="text" name="productName" id="productName" value={formData.productName} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
                         </div>
                         <div>
                             <label htmlFor="brand" className="block text-sm font-medium text-gray-700">Brand</label>
@@ -1338,51 +1486,52 @@ const ServiceEntryForm = ({ onSuccess }) => {
                             <label htmlFor="size" className="block text-sm font-medium text-gray-700">Size</label>
                             <input type="text" name="size" id="size" value={formData.size} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
                         </div>
-                     </div>
+                    </div>
                 </div>
 
                 <div className="p-6 border border-gray-200 rounded-lg">
-                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-tools mr-3 text-purple-500"></i>Service Description *</h3>
-                     <MultiSelectDropdown
-                        options={SERVICE_OPTIONS}
-                        selectedOptions={selectedServices}
-                        onChange={setSelectedServices}
-                        placeholder="Select required services..."
-                    />
-                </div>
-
-                <div className="p-6 border border-gray-200 rounded-lg">
-                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-shield-alt mr-3 text-purple-500"></i>Warranty Status</h3>
-                    <select value={warrantyStatus} onChange={e => setWarrantyStatus(e.target.value)} className="block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
-                        <option value="Non-Warranty">Non-Warranty</option>
-                        <option value="Warranty">Warranty</option>
-                    </select>
-                    
-                    {warrantyStatus === 'Non-Warranty' && (
-                        <div className="mt-4">
-                            <label htmlFor="estimateAmount" className="block text-sm font-medium text-gray-700">Estimate Amount *</label>
-                            <input type="number" name="estimateAmount" id="estimateAmount" value={formData.estimateAmount} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-shield-alt mr-3 text-purple-500"></i>Service & Warranty</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                             <label className="block text-sm font-medium text-gray-700">Warranty Status</label>
+                             <select value={warrantyStatus} onChange={(e) => setWarrantyStatus(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500">
+                                <option value="Non-Warranty">Non-Warranty</option>
+                                <option value="Warranty">Warranty</option>
+                            </select>
                         </div>
-                    )}
-
-                    {warrantyStatus === 'Warranty' && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+                        {warrantyStatus === 'Non-Warranty' ? (
                             <div>
-                                <label htmlFor="warrantyInvoiceNumber" className="block text-sm font-medium text-gray-700">Warranty Invoice Number *</label>
-                                <input type="text" name="warrantyInvoiceNumber" id="warrantyInvoiceNumber" value={formData.warrantyInvoiceNumber} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                                <label htmlFor="estimateAmount" className="block text-sm font-medium text-gray-700">Estimate Amount</label>
+                                <input type="number" name="estimateAmount" id="estimateAmount" value={formData.estimateAmount} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
                             </div>
-                            <div>
-                                <label htmlFor="warrantyDate" className="block text-sm font-medium text-gray-700">Warranty Date *</label>
-                                <input type="date" name="warrantyDate" id="warrantyDate" value={formData.warrantyDate} onChange={handleInputChange} required className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
-                            </div>
-                        </div>
-                    )}
+                        ) : (
+                            <>
+                                <div>
+                                    <label htmlFor="warrantyInvoiceNumber" className="block text-sm font-medium text-gray-700">Warranty Invoice Number</label>
+                                    <input type="text" name="warrantyInvoiceNumber" id="warrantyInvoiceNumber" value={formData.warrantyInvoiceNumber} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                                </div>
+                                <div>
+                                    <label htmlFor="warrantyDate" className="block text-sm font-medium text-gray-700">Warranty Date</label>
+                                    <input type="date" name="warrantyDate" id="warrantyDate" value={formData.warrantyDate} onChange={handleInputChange} className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"/>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                     <div className="mt-6">
+                        <label className="block text-sm font-medium text-gray-700">Service Description *</label>
+                        <MultiSelectDropdown
+                            options={SERVICE_OPTIONS}
+                            selectedOptions={selectedServices}
+                            onChange={setSelectedServices}
+                        />
+                    </div>
                 </div>
 
                 <div className="p-6 border border-gray-200 rounded-lg">
-                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-camera mr-3 text-purple-500"></i>Product Image *</h3>
-                    <input type="file" name="image" id="image" accept="image/*" capture="environment" onChange={handleImageChange} required className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
-                    {compressing && <div className="mt-4 flex items-center text-sm text-gray-600"><Spinner size="sm" /><span className="ml-2">Compressing image...</span></div>}
+                    <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-camera mr-3 text-purple-500"></i>Product Image</h3>
+                    <label htmlFor="image" className="block text-sm font-medium text-gray-700">Upload Image *</label>
+                    <input type="file" name="image" id="image" accept="image/*" onChange={handleImageChange} required className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"/>
+                     {compressing && <div className="mt-4 flex items-center text-sm text-gray-600"><Spinner size="sm" /><span className="ml-2">Compressing image...</span></div>}
                     {imagePreview && !compressing && (
                         <div className="mt-4">
                             <img src={imagePreview} alt="Product Preview" className="max-h-48 rounded-lg border border-gray-300 p-1"/>
@@ -1390,9 +1539,12 @@ const ServiceEntryForm = ({ onSuccess }) => {
                     )}
                 </div>
 
-                <div className="flex justify-center">
-                    <button type="submit" disabled={submitting || loadingSlip} className="w-full md:w-auto flex justify-center items-center py-3 px-6 border border-transparent rounded-md shadow-sm text-base font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:bg-purple-300 disabled:cursor-not-allowed">
-                        {submitting ? <><Spinner size="sm" /> Submitting...</> : 'Submit Service Request'}
+                <div className="pt-5 flex justify-end space-x-4">
+                    <button type="button" onClick={() => resetForm(fetchedSlipNo)} className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                        Clear Form
+                    </button>
+                    <button type="submit" disabled={submitting || loadingSlip} className="inline-flex justify-center py-2 px-6 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:bg-purple-300">
+                        {submitting ? <><Spinner size="sm" /> Submitting...</> : (isCompletionMode ? 'Complete Entry' : 'Create Service Slip')}
                     </button>
                 </div>
             </form>
@@ -1401,385 +1553,687 @@ const ServiceEntryForm = ({ onSuccess }) => {
 };
 
 
-// === From components/Sidebar.tsx (UPDATED) ===
-const NavLink = ({ page, currentPage, onNavigate, icon, label }) => {
-    const isActive = currentPage === page;
-    return (
-        <li>
-            <a
-                href="#"
-                onClick={(e) => {
-                    e.preventDefault();
-                    onNavigate();
-                }}
-                className={`flex items-center p-4 text-base font-normal rounded-lg transition duration-75 group ${
-                    isActive
-                        ? 'bg-purple-700 text-white'
-                        : 'text-purple-100 hover:bg-purple-700'
-                }`}
-            >
-                <i className={`${icon} w-6 h-6 text-purple-200 transition duration-75 group-hover:text-white`}></i>
-                <span className="ml-3">{label}</span>
-            </a>
-        </li>
-    );
-};
-const Sidebar = ({ currentPage, navigate, isOpen, setIsOpen }) => {
-    const handleNavigate = (page) => {
-        navigate(page);
-        setIsOpen(false);
-    };
-    return (
-        <>
-            <div
-                className={`fixed inset-0 bg-black bg-opacity-50 z-30 md:hidden transition-opacity ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-                onClick={() => setIsOpen(false)}
-                aria-hidden="true"
-            ></div>
-            <aside className={`fixed inset-y-0 left-0 z-40 w-64 h-full bg-gradient-to-b from-purple-800 to-indigo-900 shadow-lg text-white flex flex-col transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-                <div className="flex items-center justify-between px-6 py-4 border-b border-purple-700">
-                    <div className="flex items-center space-x-3">
-                        <div className="bg-purple-600 p-2 rounded-lg">
-                            <i className="fas fa-tools text-white text-xl fa-fw"></i>
-                        </div>
-                        <span className="text-xl font-bold text-white">Roshan Bags</span>
-                    </div>
-                    <button onClick={() => setIsOpen(false)} className="text-purple-100 hover:text-white md:hidden" aria-label="Close sidebar">
-                         <i className="fas fa-times fa-lg"></i>
-                    </button>
-                </div>
-                <nav className="flex-1 px-4 py-4">
-                    <ul className="space-y-2">
-                        <NavLink page="dashboard" currentPage={currentPage} onNavigate={() => handleNavigate('dashboard')} icon="fas fa-tachometer-alt" label="Dashboard" />
-                        <NavLink page="entry" currentPage={currentPage} onNavigate={() => handleNavigate('entry')} icon="fas fa-clipboard-list" label="Service Entry" />
-                        <NavLink page="data" currentPage={currentPage} onNavigate={() => handleNavigate('data')} icon="fas fa-database" label="Service Data" />
-                        <NavLink page="settings" currentPage={currentPage} onNavigate={() => handleNavigate('settings')} icon="fas fa-cog" label="Settings" />
-                    </ul>
-                </nav>
-            </aside>
-        </>
-    );
-};
-
-
-// === NEW: Dashboard Component ===
-const StatCard = ({ title, value, icon, color, onClick }) => (
-    <div 
-        onClick={onClick}
-        className={`bg-white p-6 rounded-2xl shadow-lg flex items-center space-x-4 ${onClick ? 'cursor-pointer transition-transform transform hover:scale-105' : ''}`}
-    >
-        <div className={`w-16 h-16 rounded-full flex items-center justify-center ${color}`}>
-            <i className={`fas ${icon} text-white text-2xl`}></i>
-        </div>
-        <div>
-            <p className="text-gray-500 text-sm font-medium uppercase tracking-wider">{title}</p>
-            <p className="text-3xl font-bold text-gray-800">{value}</p>
-        </div>
-    </div>
-);
+// === NEW: Dashboard View ===
 const Dashboard = ({ services, onNavigateWithFilters }) => {
-    const stats = useMemo(() => {
-        const statusCounts = services.reduce((acc, service) => {
-            const status = service.serviceStatus || 'N/A';
-            acc[status] = (acc[status] || 0) + 1;
-            return acc;
-        }, {});
-
-        return {
-            total: services.length,
-            new: statusCounts['New'] || 0,
-            inService: statusCounts['In Service'] || 0,
-            completed: statusCounts['Completed'] || 0,
-            informed: statusCounts['Informed to Customer'] || 0,
-            delivered: statusCounts['Delivered to Customer'] || 0,
-        };
+    const statusCounts = useMemo(() => {
+        const counts = { 'New': 0, 'In Service': 0, 'Completed': 0, 'Informed to Customer': 0, 'Delivered to Customer': 0, 'Total': 0 };
+        services.forEach(service => {
+            if (counts[service.serviceStatus] !== undefined) {
+                counts[service.serviceStatus]++;
+            }
+            counts['Total']++;
+        });
+        return counts;
     }, [services]);
+    
+    const readyForDeliveryCount = statusCounts.Completed + statusCounts['Informed to Customer'];
 
-    const handleCardClick = (status) => {
-        if (status) {
-            onNavigateWithFilters('data', { status });
-        } else {
-            onNavigateWithFilters('data');
-        }
-    };
-
+    const kpiData = [
+        { title: 'Total Services', value: statusCounts.Total, icon: 'fas fa-cogs', color: 'bg-blue-500', filter: null },
+        { title: 'New Requests', value: statusCounts.New, icon: 'fas fa-bell', color: 'bg-yellow-500', filter: 'New' },
+        { title: 'In Progress', value: statusCounts['In Service'], icon: 'fas fa-sync-alt', color: 'bg-indigo-500', filter: 'In Service' },
+        { title: 'Ready for Delivery', value: readyForDeliveryCount, icon: 'fas fa-check-circle', color: 'bg-green-500', filter: ['Completed', 'Informed to Customer'] },
+    ];
+    
     return (
-        <div className="space-y-8">
-            <h1 className="text-4xl font-bold text-gray-800">Dashboard</h1>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <StatCard title="Total Services" value={stats.total} icon="fa-tools" color="bg-purple-500" onClick={() => handleCardClick('All')} />
-                <StatCard title="New" value={stats.new} icon="fa-star" color="bg-blue-500" onClick={() => handleCardClick('New')} />
-                <StatCard title="In Service" value={stats.inService} icon="fa-cogs" color="bg-yellow-500" onClick={() => handleCardClick('In Service')} />
-                <StatCard title="Completed" value={stats.completed} icon="fa-check-circle" color="bg-green-500" onClick={() => handleCardClick('Completed')} />
-                <StatCard title="Informed Customer" value={stats.informed} icon="fa-bell" color="bg-indigo-500" onClick={() => handleCardClick('Informed to Customer')} />
-                <StatCard title="Delivered" value={stats.delivered} icon="fa-truck" color="bg-gray-500" onClick={() => handleCardClick('Delivered to Customer')} />
+        <div className="bg-white p-8 rounded-2xl shadow-lg">
+            <h2 className="text-3xl font-bold text-gray-800 mb-6">Dashboard Overview</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                {kpiData.map(kpi => (
+                    <div 
+                        key={kpi.title} 
+                        className={`${kpi.color} text-white p-6 rounded-xl shadow-md flex items-center ${kpi.filter ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+                        onClick={() => kpi.filter && onNavigateWithFilters({ status: kpi.filter })}
+                    >
+                        <div className="mr-4 text-3xl opacity-75">
+                            <i className={kpi.icon}></i>
+                        </div>
+                        <div>
+                            <div className="text-4xl font-extrabold">{kpi.value}</div>
+                            <div className="text-sm font-medium uppercase tracking-wider">{kpi.title}</div>
+                        </div>
+                    </div>
+                ))}
+            </div>
+            <div className="mt-8">
+                 <h3 className="text-xl font-semibold text-gray-700 mb-4">Service Status Breakdown</h3>
+                <div className="flex flex-col space-y-2">
+                    {Object.entries(statusCounts).filter(([key]) => key !== 'Total').map(([status, count]) => (
+                         <div key={status}>
+                             <div className="flex justify-between items-center text-sm mb-1">
+                                <span className="font-medium text-gray-600">{status}</span>
+                                <span className="text-gray-500">{count} of {statusCounts.Total}</span>
+                             </div>
+                             <div className="w-full bg-gray-200 rounded-full h-2.5">
+                                 <div 
+                                    className={`${getStatusColor(status).split(' ')[0]} h-2.5 rounded-full`}
+                                    style={{ width: `${statusCounts.Total > 0 ? (count / statusCounts.Total) * 100 : 0}%` }}
+                                 ></div>
+                             </div>
+                         </div>
+                    ))}
+                </div>
             </div>
         </div>
     );
 };
 
+// === From components/ServicemanPayouts (UPDATED with History and new Modals) ===
+const PrintablePayoutSlip = forwardRef(({ serviceman, services, total, payoutId, payoutDate }, ref) => {
+    if (!serviceman) return null;
 
-// === NEW: Settings Component ===
-const Settings = () => {
+    const currentDate = payoutDate || new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD format
+
+    return (
+        <div ref={ref} className="p-4 bg-white font-sans text-gray-800 printable-payout">
+            <style>{`
+                @media print {
+                    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+                    body * { visibility: hidden; }
+                    .printable-payout, .printable-payout * { visibility: visible; }
+                    .printable-payout { position: absolute; left: 0; top: 0; width: 100%; height: auto; margin: 0; padding: 20px; }
+                    .print-no-break { page-break-inside: avoid; }
+                }
+            `}</style>
+            <div className="border border-gray-300 p-6">
+                {/* Header */}
+                <header className="flex justify-between items-start pb-4 mb-6 border-b border-gray-200 print-no-break">
+                    <div>
+                        <h1 className="text-2xl font-bold text-gray-900">Roshan Bags</h1>
+                        <p className="text-sm text-gray-500">Service Department</p>
+                    </div>
+                    <div className="text-right">
+                        <h2 className="text-lg font-semibold text-purple-700">Payment Voucher</h2>
+                        <p className="text-xs text-gray-600 mt-1">
+                            <strong>Date:</strong> {currentDate}
+                        </p>
+                        <p className="text-xs text-gray-600">
+                            <strong>Payout ID:</strong> <span className="font-mono bg-gray-100 px-1 rounded">{payoutId}</span>
+                        </p>
+                    </div>
+                </header>
+
+                {/* Payable & Total */}
+                <div className="grid grid-cols-2 gap-6 mb-6 print-no-break">
+                    <div className="bg-gray-50 p-4 rounded-lg">
+                        <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Payable To</p>
+                        <p className="text-lg font-semibold text-gray-900">{serviceman}</p>
+                    </div>
+                    <div className="bg-purple-50 p-4 rounded-lg text-right">
+                        <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Total Amount</p>
+                        <p className="text-3xl font-extrabold text-purple-800">₹{total.toFixed(2)}</p>
+                    </div>
+                </div>
+
+                {/* Details Table */}
+                <div className="w-full overflow-x-auto print-no-break">
+                    <p className="text-sm font-semibold text-gray-700 mb-2">Service Details</p>
+                    <table className="min-w-full text-xs">
+                        <thead className="bg-gray-100 text-gray-600 uppercase">
+                            <tr>
+                                <th className="px-3 py-2 text-left font-semibold">Slip #</th>
+                                <th className="px-3 py-2 text-left font-semibold">Date</th>
+                                <th className="px-3 py-2 text-left font-semibold">Customer</th>
+                                <th className="px-3 py-2 text-left font-semibold">Service</th>
+                                <th className="px-3 py-2 text-right font-semibold">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                            {services.map(s => (
+                                <tr key={s.rowIndex} className="hover:bg-gray-50">
+                                    <td className="px-3 py-2 font-mono">{s.slipNo}</td>
+                                    <td className="px-3 py-2">{s.date}</td>
+                                    <td className="px-3 py-2">{s.customerName}</td>
+                                    <td className="px-3 py-2 max-w-xs truncate" title={s.serviceType}>{s.serviceType}</td>
+                                    <td className="px-3 py-2 text-right font-semibold">₹{parseFloat(s.servicemanAmount).toFixed(2)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+
+                {/* Footer */}
+                <footer className="mt-12 pt-6 border-t border-gray-200 text-xs text-gray-500 print-no-break">
+                    <div className="flex justify-between items-end">
+                        <div>
+                            <p>This is a computer-generated voucher.</p>
+                            <p>Generated by Service Hub Pro.</p>
+                        </div>
+                        <div className="w-1/3">
+                            <div className="border-b border-gray-400 mb-2"></div>
+                            <p className="text-center">Serviceman Signature</p>
+                        </div>
+                    </div>
+                </footer>
+            </div>
+        </div>
+    );
+});
+
+
+const PayoutSlipModal = ({ serviceman, services, total, payoutId, onClose, onConfirmAndPay }) => {
+    const slipRef = useRef(null);
+    const [isPaying, setIsPaying] = useState(false);
+    
+    const handleConfirm = async () => {
+        setIsPaying(true);
+        await onConfirmAndPay();
+        setIsPaying(false);
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+                <div className="p-4 border-b flex justify-between items-center">
+                    <h3 className="text-xl font-semibold text-gray-800">Generated Payout Slip</h3>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><i className="fas fa-times fa-lg"></i></button>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                    <PrintablePayoutSlip ref={slipRef} serviceman={serviceman} services={services} total={total} payoutId={payoutId} />
+                </div>
+                <div className="p-4 bg-gray-50 border-t flex flex-wrap justify-end items-center gap-2">
+                    <button onClick={onClose} className="py-2 px-4 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Close</button>
+                    <DownloadButton format="a4" service={{customerName: serviceman, slipNo: payoutId}} slipRef={slipRef} />
+                    <button onClick={handleConfirm} disabled={isPaying} className="inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-green-300">
+                        {isPaying ? <><Spinner size="sm" /><span className="ml-2">Processing...</span></> : 'Mark as Paid'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const PayoutHistoryDetailModal = ({ payout, onClose }) => {
+    const slipRef = useRef(null);
+    if (!payout) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+                <div className="p-4 border-b flex justify-between items-center">
+                    <h3 className="text-xl font-semibold text-gray-800">Payout Details</h3>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><i className="fas fa-times fa-lg"></i></button>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                    <PrintablePayoutSlip
+                        ref={slipRef}
+                        serviceman={payout.servicemanName}
+                        services={payout.services}
+                        total={payout.totalAmount}
+                        payoutId={payout.payoutId}
+                        payoutDate={payout.payoutDate}
+                    />
+                </div>
+                <div className="p-4 bg-gray-50 border-t flex flex-wrap justify-end items-center gap-2">
+                    <button onClick={onClose} className="py-2 px-4 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">Close</button>
+                    <DownloadButton format="a4" service={{customerName: payout.servicemanName, slipNo: payout.payoutId}} slipRef={slipRef} />
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ServicemanPayouts = ({ services, servicemenNames, onDataRefresh }) => {
+    const [activeTab, setActiveTab] = useState('pending');
+    const [selectedServiceman, setSelectedServiceman] = useState('');
+    const [selectedServices, setSelectedServices] = useState({});
+    const [payoutSlipData, setPayoutSlipData] = useState(null);
+    const [error, setError] = useState(null);
+    const [historyServicemanFilter, setHistoryServicemanFilter] = useState('All');
+    const [historyStartDate, setHistoryStartDate] = useState('');
+    const [historyEndDate, setHistoryEndDate] = useState('');
+    const [viewingPayoutDetails, setViewingPayoutDetails] = useState(null);
+
+    // PENDING Payouts Logic
+    const pendingServices = useMemo(() => {
+        if (!selectedServiceman) return [];
+        return services.filter(s =>
+            s.servicemanName === selectedServiceman &&
+            parseFloat(s.servicemanAmount) > 0 &&
+            (s.serviceStatus === 'Completed' || s.serviceStatus === 'Delivered to Customer') &&
+            s.servicemanPayoutStatus !== 'Paid'
+        );
+    }, [selectedServiceman, services]);
+
+    const servicesForPayout = useMemo(() => {
+        return pendingServices.filter(s => selectedServices[s.rowIndex]);
+    }, [selectedServices, pendingServices]);
+
+    const totalPayoutAmount = useMemo(() => {
+        return servicesForPayout.reduce((total, s) => total + parseFloat(s.servicemanAmount), 0);
+    }, [servicesForPayout]);
+
+    // HISTORY Payouts Logic
+    const payoutHistory = useMemo(() => {
+        const paidServices = services.filter(s => s.servicemanPayoutStatus === 'Paid' && s.servicemanPayoutId);
+        const groupedByPayoutId = paidServices.reduce((acc, service) => {
+            const id = service.servicemanPayoutId;
+            if (!acc[id]) {
+                acc[id] = {
+                    payoutId: id,
+                    servicemanName: service.servicemanName,
+                    payoutDate: service.servicemanPayoutDate,
+                    services: [],
+                    totalAmount: 0,
+                };
+            }
+            acc[id].services.push(service);
+            acc[id].totalAmount += parseFloat(service.servicemanAmount || 0);
+            return acc;
+        }, {});
+        return Object.values(groupedByPayoutId).sort((a,b) => (b.payoutDate || '').localeCompare(a.payoutDate || ''));
+    }, [services]);
+    
+    const filteredHistory = useMemo(() => {
+       return payoutHistory.filter(payout => {
+           if (historyServicemanFilter !== 'All' && payout.servicemanName !== historyServicemanFilter) return false;
+           if (historyStartDate && payout.payoutDate < historyStartDate) return false;
+           if (historyEndDate && payout.payoutDate > historyEndDate) return false;
+           return true;
+       });
+    }, [payoutHistory, historyServicemanFilter, historyStartDate, historyEndDate]);
+
+    const handleGeneratePayout = () => {
+        if (servicesForPayout.length === 0) {
+            alert('Please select at least one service to generate a payout slip.');
+            return;
+        }
+        setPayoutSlipData({
+            serviceman: selectedServiceman,
+            services: servicesForPayout,
+            total: totalPayoutAmount,
+            payoutId: `PAY-${Date.now()}`
+        });
+    };
+    
+    const handleConfirmAndPay = async () => {
+        setError(null);
+        const { services, payoutId } = payoutSlipData;
+        try {
+            const payoutDate = new Date().toISOString().split('T')[0];
+            for (const service of services) {
+                const payload = {
+                    rowIndex: service.rowIndex,
+                    servicemanPayoutStatus: 'Paid',
+                    servicemanPayoutId: payoutId,
+                    servicemanPayoutDate: payoutDate
+                };
+                await updateService(payload);
+            }
+            alert(`Successfully marked ${services.length} services as paid.`);
+            setPayoutSlipData(null);
+            setSelectedServices({});
+            onDataRefresh();
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+            setError(`Failed to mark services as paid: ${errorMessage}`);
+            console.error(err);
+        }
+    };
+
+    return (
+        <div className="bg-white p-8 rounded-2xl shadow-lg">
+            <h2 className="text-3xl font-bold text-gray-800 mb-6">Serviceman Payouts</h2>
+             {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mb-4" role="alert">{error}</div>}
+
+            <div className="border-b border-gray-200 mb-6">
+                <nav className="-mb-px flex space-x-6" aria-label="Tabs">
+                    <button onClick={() => setActiveTab('pending')} className={`${activeTab === 'pending' ? 'border-purple-500 text-purple-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}>
+                        Pending Payouts
+                    </button>
+                    <button onClick={() => setActiveTab('history')} className={`${activeTab === 'history' ? 'border-purple-500 text-purple-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}>
+                        Payout History
+                    </button>
+                </nav>
+            </div>
+
+            {activeTab === 'pending' && (
+                <div>
+                    <div className="flex flex-col md:flex-row gap-4 mb-6">
+                        <div className="flex-1">
+                            <label htmlFor="serviceman-select" className="block text-sm font-medium text-gray-700">Select Serviceman</label>
+                            <select id="serviceman-select" value={selectedServiceman} onChange={e => {setSelectedServiceman(e.target.value); setSelectedServices({});}} className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-purple-500 focus:border-purple-500 sm:text-sm rounded-md">
+                                <option value="">-- Select a name --</option>
+                                {servicemenNames.map(name => <option key={name} value={name}>{name}</option>)}
+                            </select>
+                        </div>
+                        <div className="flex items-end">
+                            <button onClick={handleGeneratePayout} disabled={servicesForPayout.length === 0} className="w-full md:w-auto inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:bg-purple-300">
+                                Generate Payout Slip ({servicesForPayout.length})
+                            </button>
+                        </div>
+                    </div>
+                    {selectedServiceman && (
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left w-12"><input type="checkbox" onChange={(e) => e.target.checked ? setSelectedServices(pendingServices.reduce((acc, s) => ({...acc, [s.rowIndex]: true}), {})) : setSelectedServices({})} checked={pendingServices.length > 0 && servicesForPayout.length === pendingServices.length} className="h-4 w-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500" /></th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Slip No</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Amount</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                {pendingServices.map(service => (
+                                    <tr key={service.rowIndex} className={`${selectedServices[service.rowIndex] ? 'bg-purple-50' : ''}`}>
+                                        <td className="px-4 py-4"><input type="checkbox" checked={!!selectedServices[service.rowIndex]} onChange={() => setSelectedServices(prev => ({ ...prev, [service.rowIndex]: !prev[service.rowIndex] }))} className="h-4 w-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500" /></td>
+                                        <td className="px-4 py-4 font-medium">{service.slipNo}</td>
+                                        <td className="px-4 py-4">{service.date}</td>
+                                        <td className="px-4 py-4">{service.customerName}</td>
+                                        <td className="px-4 py-4"><span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(service.serviceStatus)}`}>{service.serviceStatus}</span></td>
+                                        <td className="px-4 py-4 text-right font-semibold">₹ {service.servicemanAmount}</td>
+                                    </tr>
+                                ))}
+                                </tbody>
+                            </table>
+                            {pendingServices.length === 0 && <p className="text-center py-8 text-gray-500">No pending payments found for {selectedServiceman}.</p>}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {activeTab === 'history' && (
+                <div>
+                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                        <select value={historyServicemanFilter} onChange={e => setHistoryServicemanFilter(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 bg-white">
+                           <option value="All">All Servicemen</option>
+                           {servicemenNames.map(name => <option key={name} value={name}>{name}</option>)}
+                        </select>
+                        <input type="date" value={historyStartDate} onChange={e => setHistoryStartDate(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500" title="Filter by start date" />
+                        <input type="date" value={historyEndDate} onChange={e => setHistoryEndDate(e.target.value)} className="w-full px-4 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500" title="Filter by end date" />
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                             <thead className="bg-gray-50">
+                                <tr>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payout ID</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date Paid</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Serviceman</th>
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Services</th>
+                                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Total Amount</th>
+                                    <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                                </tr>
+                             </thead>
+                             <tbody className="bg-white divide-y divide-gray-200">
+                                {filteredHistory.map(payout => (
+                                    <tr key={payout.payoutId}>
+                                        <td className="px-4 py-4 font-mono text-xs">{payout.payoutId}</td>
+                                        <td className="px-4 py-4">{payout.payoutDate}</td>
+                                        <td className="px-4 py-4 font-medium">{payout.servicemanName}</td>
+                                        <td className="px-4 py-4 text-center">{payout.services.length}</td>
+                                        <td className="px-4 py-4 text-right font-semibold">₹ {payout.totalAmount.toFixed(2)}</td>
+                                        <td className="px-4 py-4 text-center">
+                                            <button onClick={() => setViewingPayoutDetails(payout)} className="text-purple-600 hover:text-purple-900">View Details</button>
+                                        </td>
+                                    </tr>
+                                ))}
+                             </tbody>
+                        </table>
+                         {filteredHistory.length === 0 && <p className="text-center py-8 text-gray-500">No payout history found for the selected filters.</p>}
+                    </div>
+                </div>
+            )}
+            
+            {payoutSlipData && <PayoutSlipModal {...payoutSlipData} onClose={() => setPayoutSlipData(null)} onConfirmAndPay={handleConfirmAndPay} />}
+            {viewingPayoutDetails && <PayoutHistoryDetailModal payout={viewingPayoutDetails} onClose={() => setViewingPayoutDetails(null)} />}
+        </div>
+    );
+};
+
+
+// === NEW: Settings View ===
+const Settings = ({ onSettingsChange }) => {
     const SETTINGS_KEY = 'serviceHubPro_settings';
-    const [markup, setMarkup] = useState('30');
-    const [saveStatus, setSaveStatus] = useState('');
-    const timeoutRef = useRef(null);
+    const [markupPercentage, setMarkupPercentage] = useState(30);
 
-    // Load settings on component mount
     useEffect(() => {
         try {
             const savedSettings = localStorage.getItem(SETTINGS_KEY);
             if (savedSettings) {
                 const settings = JSON.parse(savedSettings);
                 if (settings.markupPercentage !== undefined) {
-                    setMarkup(String(settings.markupPercentage));
+                    setMarkupPercentage(settings.markupPercentage);
                 }
             }
         } catch (e) {
-            console.error("Failed to load settings from localStorage", e);
+            console.error("Could not load settings.", e);
         }
     }, []);
 
-    const handleMarkupChange = (e) => {
-        const value = e.target.value;
-        setMarkup(value);
-
-        // Debounce saving to localStorage
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-        }
-        
-        timeoutRef.current = setTimeout(() => {
-            const percentage = parseFloat(value);
-            if (!isNaN(percentage) && percentage >= 0) {
-                 try {
-                    const settings = { markupPercentage: percentage };
-                    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-                    setSaveStatus('Saved!');
-                    setTimeout(() => setSaveStatus(''), 2000); // Clear message after 2s
-                } catch (err) {
-                    console.error("Failed to save settings", err);
-                    setSaveStatus('Error saving.');
-                }
-            } else if (value !== '') {
-                 setSaveStatus('Invalid value.');
-            } else {
-                 setSaveStatus('');
+    const handleSave = () => {
+        const settings = { markupPercentage: parseFloat(markupPercentage) };
+        try {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            alert('Settings saved successfully!');
+            if (onSettingsChange) {
+                onSettingsChange(settings);
             }
-        }, 500); // Save 500ms after user stops typing
+        } catch (e) {
+            alert('Failed to save settings.');
+            console.error("Could not save settings.", e);
+        }
     };
-
+    
     return (
-        <div className="max-w-2xl mx-auto">
-            <h1 className="text-4xl font-bold text-gray-800 mb-8">Settings</h1>
-            <div className="bg-white p-8 rounded-2xl shadow-lg">
-                <div className="space-y-6">
-                    <div>
-                        <h3 className="text-lg font-semibold text-gray-700 mb-2 flex items-center">
-                            <i className="fas fa-dollar-sign mr-3 text-purple-500"></i>Pricing Configuration
-                        </h3>
-                        <p className="text-sm text-gray-500 mb-4">
-                            Set the percentage markup to calculate the customer price from the serviceman's cost.
-                        </p>
-                        <div className="flex items-center space-x-4">
-                            <label htmlFor="markup" className="block text-sm font-medium text-gray-700 shrink-0">Customer Price Markup</label>
-                            <div className="relative w-32">
-                                <input 
-                                    type="number" 
-                                    id="markup"
-                                    value={markup}
-                                    onChange={handleMarkupChange}
-                                    className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500 pr-8"
-                                    placeholder="30"
-                                    min="0"
-                                />
-                                <span className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 pointer-events-none">%</span>
-                            </div>
-                            {saveStatus && (
-                                <p className={`text-sm transition-opacity duration-300 ${saveStatus.includes('Saved') ? 'text-green-600' : 'text-red-600'}`}>
-                                    {saveStatus}
-                                </p>
-                            )}
+        <div className="bg-white p-8 rounded-2xl shadow-lg max-w-2xl mx-auto">
+            <h2 className="text-3xl font-bold text-gray-800 mb-6">Application Settings</h2>
+            <div className="space-y-6">
+                <div>
+                    <label htmlFor="markup" className="block text-sm font-medium text-gray-700">
+                        Serviceman Amount Markup
+                    </label>
+                    <div className="mt-1 relative rounded-md shadow-sm">
+                        <input
+                            type="number"
+                            name="markup"
+                            id="markup"
+                            className="focus:ring-purple-500 focus:border-purple-500 block w-full pl-7 pr-12 sm:text-sm border-gray-300 rounded-md"
+                            placeholder="30"
+                            value={markupPercentage}
+                            onChange={(e) => setMarkupPercentage(e.target.value)}
+                        />
+                        <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
+                            <span className="text-gray-500 sm:text-sm">%</span>
                         </div>
                     </div>
+                    <p className="mt-2 text-sm text-gray-500">
+                        This percentage is used to calculate the suggested 'Customer Paid Amount' based on the 'Serviceman Amount' in the edit form.
+                    </p>
+                </div>
+                <div className="flex justify-end">
+                     <button 
+                        onClick={handleSave}
+                        className="inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
+                     >
+                        Save Settings
+                     </button>
                 </div>
             </div>
         </div>
     );
 };
 
-
-// === From App.tsx (REFACTORED) ===
+// === Main App Component ===
 const App = () => {
-    const [currentPage, setCurrentPage] = useState('dashboard');
-    const [selectedService, setSelectedService] = useState(null);
-    const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
-    const [refreshDataKey, setRefreshDataKey] = useState(0);
-    const [showSlipFor, setShowSlipFor] = useState(null);
-    const [serviceToDownload, setServiceToDownload] = useState(null);
-    const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-
-    // Lifted state for services data
+    const [activeView, setActiveView] = useState('dashboard');
     const [services, setServices] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [initialFilters, setInitialFilters] = useState({});
+    const [selectedServiceForModal, setSelectedServiceForModal] = useState(null);
+    const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+    const [isSlipModalOpen, setIsSlipModalOpen] = useState(false);
+    const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
+    const [initialDataFilters, setInitialDataFilters] = useState(null);
+    const [serviceToComplete, setServiceToComplete] = useState(null);
+    const [_, forceSettingsUpdate] = useState(0); // Dummy state to trigger re-renders
 
-    // Lifted data fetching logic
+    const fetchServices = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const data = await getAllServices();
+            // [BUG FIX] Filter out any row that might be a header from the sheet data
+            const filteredData = data.filter(row => row && typeof row === 'object' && row.slipNo !== 'Slip No');
+            
+            const normalizedData = filteredData.map(service => ({
+                ...service,
+                date: normalizeDateString(service.date),
+                warrantyDate: normalizeDateString(service.warrantyDate)
+            }));
+            setServices(normalizedData);
+        } catch (err) {
+            setError('Failed to load service data. Please check your connection and script settings.');
+            console.error(err);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+    
     useEffect(() => {
-        const fetchServices = async () => {
-            setLoading(true);
-            setError(null);
-            try {
-                const data = await getAllServices();
-                const processedData = data
-                    .filter(row => row && row.slipNo && !isNaN(parseInt(String(row.slipNo), 10)))
-                    .map(service => ({
-                        ...service,
-                        date: normalizeDateString(service.date),
-                        warrantyDate: normalizeDateString(service.warrantyDate),
-                    }));
-                setServices(processedData);
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
-                setError(`Failed to fetch services: ${errorMessage}`);
-            } finally {
-                setLoading(false);
-            }
-        };
         fetchServices();
-    }, [refreshDataKey]);
+    }, [fetchServices]);
+    
+    const handleSettingsChange = () => {
+        forceSettingsUpdate(c => c + 1);
+    };
 
+    const handleFormSuccess = (newService) => {
+        setSelectedServiceForModal(newService);
+        setIsSlipModalOpen(true);
+        fetchServices(); // Refresh the list
+    };
+
+    const handleCompletionSuccess = () => {
+        setActiveView('data'); // Go back to data table
+        setServiceToComplete(null); // Reset the state
+        fetchServices(); // Refresh data
+    };
+    
     const handleEditService = (service) => {
-        setSelectedService(service);
+        setSelectedServiceForModal(service);
         setIsUpdateModalOpen(true);
     };
 
-    const handleCloseModal = () => {
-        setSelectedService(null);
-        setIsUpdateModalOpen(false);
+    const handleDownloadSlip = (service) => {
+        setSelectedServiceForModal(service);
+        setIsDownloadModalOpen(true);
     };
 
+    const handleCompleteSkipped = (service) => {
+        setServiceToComplete(service);
+        setActiveView('entry');
+    };
+    
     const handleUpdateSuccess = () => {
-        handleCloseModal();
-        setRefreshDataKey(prevKey => prevKey + 1);
+        setIsUpdateModalOpen(false);
+        setSelectedServiceForModal(null);
+        fetchServices();
     };
 
-    const handleNewServiceSuccess = (newService) => {
-        setShowSlipFor(newService);
+    const servicemenNames = useMemo(() => {
+        const names = new Set(services
+            .map(s => s.servicemanName)
+            .filter(name => name && name.trim() !== ''));
+        return Array.from(names).sort();
+    }, [services]);
+
+    const navigateToDataViewWithFilters = (filters) => {
+        setInitialDataFilters(filters);
+        setActiveView('data');
     };
 
-    const handleCloseSlipModal = () => {
-        setShowSlipFor(null);
-        setRefreshDataKey(prevKey => prevKey + 1);
-        setCurrentPage('data');
-    };
-
-    const handleDownloadRequest = (service) => {
-        setServiceToDownload(service);
-    };
-
-    const navigate = (page) => {
-        setInitialFilters({}); // Reset filters on direct navigation
-        setCurrentPage(page);
-    };
-
-    const handleNavigateWithFilters = (page, filters = {}) => {
-        setInitialFilters(filters);
-        setCurrentPage(page);
-    };
-
-    const pageTitles = {
-        dashboard: 'Dashboard',
-        entry: 'Service Entry',
-        data: 'Service Data',
-        settings: 'Settings'
-    };
-
-    const renderContent = () => {
-        if (loading && services.length === 0) {
-            return <div className="flex justify-center items-center h-full"><Spinner size="lg" /></div>;
+    const renderView = () => {
+        if (loading) {
+            return <div className="flex justify-center items-center h-64"><Spinner size="lg" /></div>;
         }
         if (error) {
-            return <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>;
+            return <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4" role="alert"><p className="font-bold">Error</p><p>{error}</p></div>;
         }
-
-        switch (currentPage) {
+        switch (activeView) {
             case 'dashboard':
-                return <Dashboard services={services} onNavigateWithFilters={handleNavigateWithFilters} />;
+                return <Dashboard services={services} onNavigateWithFilters={navigateToDataViewWithFilters} />;
             case 'entry':
-                return <ServiceEntryForm onSuccess={handleNewServiceSuccess} />;
+                return <ServiceEntryForm onSuccess={handleFormSuccess} onCompletionSuccess={handleCompletionSuccess} serviceToComplete={serviceToComplete} />;
             case 'data':
-                return <ServiceDataTable services={services} onEdit={handleEditService} onDownload={handleDownloadRequest} initialFilters={initialFilters} />;
+                return <ServiceDataTable services={services} onEdit={handleEditService} onDownload={handleDownloadSlip} onComplete={handleCompleteSkipped} initialFilters={initialDataFilters} />;
+            case 'payouts':
+                return <ServicemanPayouts services={services} servicemenNames={servicemenNames} onDataRefresh={fetchServices} />;
             case 'settings':
-                return <Settings />;
+                return <Settings onSettingsChange={handleSettingsChange}/>;
             default:
-                return null;
+                return <div>Select a view</div>;
         }
     };
+
+    const SidebarLink = ({ view, icon, label }) => (
+        <button
+            onClick={() => {
+                setInitialDataFilters(null); // Clear filters when manually changing views
+                if (view !== 'entry') {
+                    setServiceToComplete(null); // Clear completion state if navigating away
+                }
+                setActiveView(view);
+            }}
+            className={`flex items-center w-full text-left px-4 py-3 rounded-lg transition-colors duration-200 ${
+                activeView === view
+                ? 'bg-purple-600 text-white shadow-md'
+                : 'text-gray-600 hover:bg-gray-200 hover:text-gray-800'
+            }`}
+        >
+            <i className={`${icon} fa-fw mr-4`}></i>
+            <span className="font-medium">{label}</span>
+        </button>
+    );
 
     return (
         <div className="flex h-screen bg-gray-100 font-sans">
-            <Sidebar 
-                currentPage={currentPage} 
-                navigate={navigate} 
-                isOpen={isSidebarOpen} 
-                setIsOpen={setIsSidebarOpen}
-            />
-             <div className="flex-1 flex flex-col overflow-hidden">
-                <header className="bg-white shadow p-4 flex justify-between items-center md:hidden">
-                    <h1 className="text-xl font-bold text-gray-800">
-                        {pageTitles[currentPage]}
-                    </h1>
-                    <button 
-                        onClick={() => setIsSidebarOpen(true)}
-                        className="text-gray-600 focus:outline-none"
-                        aria-label="Open sidebar"
-                    >
-                        <i className="fas fa-bars fa-lg"></i>
-                    </button>
-                </header>
-                <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
-                    {renderContent()}
-                </main>
-            </div>
-            {isUpdateModalOpen && selectedService && (
-                <UpdateServiceModal
+            <aside className="w-64 bg-white shadow-lg p-4 flex-shrink-0">
+                <div className="flex items-center space-x-3 p-2 mb-6">
+                     <div className="flex-shrink-0 bg-purple-600 p-3 rounded-md shadow-md">
+                        <i className="fas fa-tools text-white text-xl fa-fw"></i>
+                    </div>
+                    <div>
+                        <h1 className="text-xl font-extrabold text-gray-800">Service Hub</h1>
+                        <p className="text-xs text-gray-500">Roshan Bags</p>
+                    </div>
+                </div>
+                <nav className="space-y-2">
+                    <SidebarLink view="dashboard" icon="fas fa-chart-pie" label="Dashboard" />
+                    <SidebarLink view="entry" icon="fas fa-plus-circle" label="New Service Entry" />
+                    <SidebarLink view="data" icon="fas fa-database" label="Service Data" />
+                    <SidebarLink view="payouts" icon="fas fa-hand-holding-usd" label="Serviceman Payouts" />
+                    <SidebarLink view="settings" icon="fas fa-cog" label="Settings" />
+                </nav>
+            </aside>
+
+            <main className="flex-1 p-6 lg:p-10 overflow-y-auto">
+                {renderView()}
+            </main>
+
+            {isSlipModalOpen && selectedServiceForModal && (
+                <ServiceSlipModal service={selectedServiceForModal} onClose={() => setIsSlipModalOpen(false)} />
+            )}
+             {isUpdateModalOpen && selectedServiceForModal && (
+                <UpdateServiceModal 
+                    key={selectedServiceForModal.serviceId || selectedServiceForModal.rowIndex} // Add key here
+                    service={selectedServiceForModal} 
+                    servicemenNames={servicemenNames}
                     isOpen={isUpdateModalOpen}
-                    service={selectedService}
-                    onClose={handleCloseModal}
+                    onClose={() => setIsUpdateModalOpen(false)} 
                     onSuccess={handleUpdateSuccess}
                 />
             )}
-            {showSlipFor && (
-                <ServiceSlipModal
-                    service={showSlipFor}
-                    onClose={handleCloseSlipModal}
-                />
-            )}
-            {serviceToDownload && (
-                <DownloadSlipModal
-                    service={serviceToDownload}
-                    onClose={() => setServiceToDownload(null)}
-                />
+            {isDownloadModalOpen && selectedServiceForModal && (
+                <DownloadSlipModal service={selectedServiceForModal} onClose={() => setIsDownloadModalOpen(false)} />
             )}
         </div>
     );
 };
 
-
-// === From index.tsx (The final render call) ===
-const rootElement = document.getElementById('root');
-if (!rootElement) {
-  throw new Error("Could not find root element to mount to");
-}
-const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<React.StrictMode><App /></React.StrictMode>);
 
 // --- End of consolidated application code ---
     </script>
