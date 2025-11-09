@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha512-BNaRQnYJYiPSqHHDb58B0yaPfCu+Wgds8Gp/gU33kqBtgNS4tSPHuGibyoVBL5gI9kDXrdVwTsoU_GRweLgnag==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" integrity="sha512-qZvrmS2ekKPF2mSznTQsxqPgnpkI4DNTlrdUmTzrDgektczlKNRRhy5X5AAOnx5S09ydFYWWNSfcEqDTTHgtNA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
     <!-- Add Babel for in-browser JSX/TSX compilation -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script type="importmap">
@@ -41,7 +42,7 @@ var ServiceStatus;
 })(ServiceStatus || (ServiceStatus = {}));
 
 
-// === From utils/imageUtils.ts ===
+// === From utils/imageUtils.ts (UPDATED) ===
 const getDirectGoogleDriveImageUrl = (url) => {
     if (!url || !url.includes('drive.google.com')) {
         return url || '';
@@ -49,7 +50,8 @@ const getDirectGoogleDriveImageUrl = (url) => {
     const match = url.match(/drive\.google\.com\/(?:file\/d\/|open\?id=)([a-zA-Z0-9_-]+)/);
     if (match && match[1]) {
         const fileId = match[1];
-        return `https://drive.google.com/thumbnail?id=${fileId}`;
+        // This URL format is often more reliable for direct embedding.
+        return `https://lh3.googleusercontent.com/d/${fileId}`;
     }
     return url;
 };
@@ -64,21 +66,62 @@ const waitForImagesToLoad = (element) => {
                 resolve();
             } else {
                 img.onload = resolve;
-                // Also resolve on error to prevent blocking the PDF generation indefinitely
-                img.onerror = resolve; 
+                img.onerror = () => {
+                    console.error('An image failed to load for PDF generation:', img.src);
+                    resolve(); // Still resolve to not block the process
+                };
             }
         });
     });
     return Promise.all(promises);
 };
 
+const waitForQrCode = (element) => {
+    return new Promise((resolve) => {
+        const qrCanvas = element.querySelector('canvas');
+        if (!qrCanvas) {
+            // No QR code on this slip
+            return resolve();
+        }
+
+        const checkStatus = () => {
+            const status = qrCanvas.getAttribute('data-qr-status');
+            return status === 'rendered' || status === 'error';
+        };
+
+        if (checkStatus()) {
+            return resolve();
+        }
+
+        const observer = new MutationObserver(() => {
+            if (checkStatus()) {
+                observer.disconnect();
+                resolve();
+            }
+        });
+
+        observer.observe(qrCanvas, { attributes: true, attributeFilter: ['data-qr-status'] });
+
+        // Timeout as a fallback to prevent waiting forever
+        setTimeout(() => {
+            console.warn('QR code observer timed out.');
+            observer.disconnect();
+            resolve();
+        }, 3000);
+    });
+};
+
+
 const generatePdfBlob = async (element, format) => {
     if (!element) {
         throw new Error("Element to capture is not available.");
     }
     
-    // Wait for images inside the slip to load before capturing
-    await waitForImagesToLoad(element);
+    // Wait for images AND QR code to load/render before capturing
+    await Promise.all([
+        waitForImagesToLoad(element),
+        waitForQrCode(element),
+    ]);
 
     const canvas = await html2canvas(element, {
         scale: 2,
@@ -325,24 +368,31 @@ const MultiSelectDropdown = ({
 };
 
 
-// === From components/PrintableSlip.tsx ===
-const DetailItem = ({ label, value, boldValue = true, largeValue = false }) => (
-    <div>
-        <p className="text-sm text-gray-500 uppercase tracking-wider">{label}</p>
-        <p className={`text-gray-900 ${largeValue ? 'text-xl' : 'text-base'} ${boldValue ? 'font-semibold' : 'font-normal'}`}>{value || '-'}</p>
-    </div>
-);
-const Section = ({ title, children, className = '' }) => (
-    <div className={`print-no-break ${className}`}>
-        <h3 className="text-lg font-bold text-purple-700 mb-4">{title}</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-x-6 gap-y-4">
-            {children}
-        </div>
-    </div>
-);
+// === From components/PrintableSlip.tsx (UPDATED) ===
 const PrintableSlip = forwardRef(({ service }, ref) => {
+    const qrCodeRef = useRef(null);
+
+    useEffect(() => {
+        const canvas = qrCodeRef.current;
+        if (canvas && service && window.QRCode) {
+            // Set initial status for the observer in pdfUtils
+            canvas.setAttribute('data-qr-status', 'pending');
+            const qrText = `Slip No: ${service.slipNo}\nCustomer: ${service.customerName}\nStatus: ${service.serviceStatus}`;
+            window.QRCode.toCanvas(canvas, qrText, { width: 100, margin: 1 }, (error) => {
+                if (error) {
+                    console.error("QR Code generation failed:", error);
+                    canvas.setAttribute('data-qr-status', 'error');
+                } else {
+                    canvas.setAttribute('data-qr-status', 'rendered');
+                }
+            });
+        }
+    }, [service]);
+    
+    if (!service) return null;
+
     return (
-        <div ref={ref} className="p-8 bg-white font-sans text-gray-800" id="printable-slip">
+        <div ref={ref} className="p-6 bg-white font-sans text-gray-900" id="printable-slip">
             <style>{`
                 @media print {
                     body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -360,85 +410,122 @@ const PrintableSlip = forwardRef(({ service }, ref) => {
                     .print-no-break { page-break-inside: avoid; }
                 }
             `}</style>
-
-            <header className="flex justify-between items-start pb-6 mb-6 border-b border-gray-200 print-no-break">
-                <div className="flex items-center space-x-4">
-                    <div className="flex-shrink-0 bg-purple-600 p-4 rounded-lg shadow-md">
-                        <i className="fas fa-tools text-white text-3xl fa-fw"></i>
+            
+            {/* Header */}
+            <header className="flex justify-between items-start pb-4 mb-4 border-b-2 border-gray-200 print-no-break">
+                <div className="flex items-center space-x-3">
+                    <div className="flex-shrink-0 bg-purple-600 p-3 rounded-md shadow-md">
+                        <i className="fas fa-tools text-white text-2xl fa-fw"></i>
                     </div>
                     <div>
-                        <h2 className="font-extrabold text-4xl text-gray-800">Roshan Bags</h2>
-                        <p className="text-lg text-gray-500">Service Department</p>
+                        <h2 className="font-extrabold text-3xl text-gray-800">Roshan Bags</h2>
+                        <p className="text-md text-gray-500">Service Department</p>
                     </div>
                 </div>
-                <div className="text-right text-sm text-gray-600">
-                    <p>33, SOUTH USMAN ROAD, NEAR BUS TERMINUS, T.NAGAR</p>
+                <div className="text-right text-xs text-gray-500">
+                    <p className="font-semibold">33, SOUTH USMAN ROAD, T.NAGAR</p>
                     <p>CHENNAI-600017</p>
-                    <p className="mt-2">Ph: 9345735945 | E-Mail: sales@roshanbags.com</p>
-                    <p className="font-semibold text-gray-700 mt-2">GST: 33AAIFR7046M1ZT</p>
+                    <p>Ph: 9345735945</p>
+                    <p>E-Mail: sales@roshanbags.com</p>
+                    <p className="font-bold text-gray-600 mt-1">GST: 33AAIFR7046M1ZT</p>
                 </div>
             </header>
 
-            <div className="bg-purple-50 p-2 my-6 print-no-break">
-                <h1 className="text-center text-xl font-bold text-purple-800 tracking-widest uppercase">Service Slip</h1>
+            {/* Title */}
+            <div className="text-center my-4 print-no-break">
+                <h1 className="text-2xl font-bold text-gray-700 tracking-wider uppercase">Service Slip</h1>
             </div>
 
-            <main className="space-y-6">
-                <div className="grid grid-cols-2 gap-6 pb-6">
-                    <DetailItem label="Slip No." value={service.slipNo} largeValue={true} />
-                    <DetailItem label="Date" value={service.date ? service.date.split('T')[0] : '-'} largeValue={true} />
+            {/* Customer & Slip Details */}
+            <div className="mb-6 p-4 border border-gray-200 rounded-md grid grid-cols-2 gap-4 text-sm print-no-break">
+                <div>
+                    <p className="text-gray-500 font-semibold uppercase text-xs">Billed To:</p>
+                    <p className="font-bold text-base text-gray-800">{service.customerName}</p>
+                    <p>{service.contact}</p>
                 </div>
-                
-                <hr className="border-gray-200"/>
-
-                <Section title="Customer Information" className="pt-6">
-                    <div className="md:col-span-2">
-                        <DetailItem label="Customer Name" value={service.customerName} />
+                <div className="text-right">
+                    <div className="flex justify-end items-center space-x-2">
+                        <p className="font-semibold text-gray-600">Slip No:</p>
+                        <p className="font-bold text-base text-gray-800">{service.slipNo}</p>
                     </div>
-                    <DetailItem label="Contact Number" value={service.contact} />
-                </Section>
-                
-                <hr className="border-gray-200"/>
-
-                <Section title="Product Information" className="pt-6">
-                    <DetailItem label="Product Name" value={service.productName} />
-                    <DetailItem label="Brand" value={service.brand} />
-                    <DetailItem label="Color / Size" value={service.colorAndSize} />
-                    <div className="md:col-span-3">
-                         <DetailItem label="Service Required" value={service.serviceType} boldValue={false} />
+                    <div className="flex justify-end items-center space-x-2">
+                        <p className="font-semibold text-gray-600">Date:</p>
+                        <p>{service.date ? service.date.split('T')[0] : '-'}</p>
                     </div>
-                    {service.imageUrl && (
-                         <div className="md:col-span-3 mt-4">
-                             <p className="text-sm text-gray-500 uppercase tracking-wider">Product Image</p>
-                             <img 
-                                 src={getDirectGoogleDriveImageUrl(service.imageUrl)} 
-                                 crossOrigin="anonymous" 
-                                 alt="Product" 
-                                 className="mt-2 border border-gray-200 rounded-lg max-h-48 object-contain"
-                             />
-                         </div>
-                    )}
-                </Section>
+                     <div className="flex justify-end items-center space-x-2">
+                        <p className="font-semibold text-gray-600">Status:</p>
+                        <p className="font-bold">{service.serviceStatus}</p>
+                    </div>
+                </div>
+            </div>
 
-                <hr className="border-gray-200"/>
-                
-                <Section title="Warranty & Estimate" className="pt-6">
-                     <DetailItem label="Warranty Status" value={service.warrantyStatus} />
-                        {service.warrantyStatus === 'Warranty' ? (
-                            <>
-                                <DetailItem label="Warranty Invoice" value={service.warrantyInvoiceNumber} />
-                                <DetailItem label="Warranty Date" value={service.warrantyDate ? service.warrantyDate.split('T')[0] : '-'} />
-                            </>
-                        ) : (
-                            <DetailItem label="Estimate Amount" value={service.estimateAmount ? `₹ ${service.estimateAmount}` : '-'} />
+            {/* Items Table */}
+            <div className="w-full overflow-x-auto print-no-break">
+                <table className="min-w-full text-sm">
+                    <thead className="bg-gray-100 border-b-2 border-gray-300">
+                        <tr>
+                            <th className="p-2 text-left font-semibold uppercase text-gray-600">Item Description</th>
+                            <th className="p-2 text-left font-semibold uppercase text-gray-600 w-2/5">Service(s) Required</th>
+                            <th className="p-2 text-right font-semibold uppercase text-gray-600">Estimate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr className="border-b border-gray-200">
+                            <td className="p-2 align-top">
+                                <p className="font-bold text-gray-800">{service.productName || 'N/A'}</p>
+                                <p className="text-gray-500">Brand: {service.brand || 'N/A'}</p>
+                                <p className="text-gray-500">Details: {service.colorAndSize || 'N/A'}</p>
+                            </td>
+                            <td className="p-2 align-top text-gray-600">{service.serviceType}</td>
+                            <td className="p-2 text-right align-top font-semibold text-gray-800">
+                                {service.warrantyStatus === 'Warranty' 
+                                 ? 'Under Warranty' 
+                                 : (service.estimateAmount ? `₹ ${service.estimateAmount}` : 'N/A')}
+                            </td>
+                        </tr>
+                        {service.warrantyStatus === 'Warranty' && (
+                             <tr className="bg-gray-50 text-xs">
+                                <td colSpan="3" className="p-2 text-gray-600">
+                                    <strong>Warranty Details:</strong> Invoice #{service.warrantyInvoiceNumber} dated {service.warrantyDate ? service.warrantyDate.split('T')[0] : '-'}
+                                </td>
+                            </tr>
                         )}
-                </Section>
-            </main>
+                    </tbody>
+                </table>
+            </div>
 
-             <footer className="text-center mt-12 pt-6 border-t border-gray-200 text-sm text-gray-500 print-no-break">
-                <p className="font-semibold mb-2 text-base text-gray-600">Thank you for your business!</p>
-                <p>This is a computer-generated slip and does not require a signature.</p>
-                <p>Please keep this slip for future reference.</p>
+            {/* Image & QR Code */}
+            <div className="mt-6 flex justify-between items-start print-no-break">
+                 {service.imageUrl && (
+                    <div className="w-1/3">
+                        <p className="text-xs text-gray-500 uppercase font-semibold mb-1">Product Image</p>
+                        <img 
+                            src={getDirectGoogleDriveImageUrl(service.imageUrl)} 
+                            crossOrigin="anonymous" 
+                            alt="Product" 
+                            className="border border-gray-200 rounded-md max-h-32 object-contain"
+                        />
+                    </div>
+                )}
+                 <div className="flex-1 flex justify-end">
+                     <div>
+                        <canvas ref={qrCodeRef} className="border border-gray-300"></canvas>
+                    </div>
+                 </div>
+            </div>
+
+            {/* Footer */}
+            <footer className="mt-8 pt-4 border-t-2 border-gray-200 text-xs text-gray-500 print-no-break">
+                <div className="flex justify-between items-end">
+                    <div>
+                        <p className="font-semibold text-gray-700">Thank you for your business!</p>
+                        <p>This is a computer-generated slip.</p>
+                    </div>
+                    <div className="w-1/3">
+                        <div className="border-t border-gray-400 mt-8"></div>
+                        <p className="text-center mt-1">Customer Signature</p>
+                    </div>
+                </div>
             </footer>
         </div>
     );
@@ -448,24 +535,23 @@ const PrintableSlip = forwardRef(({ service }, ref) => {
 // === From components/ServiceSlipModal.tsx ===
 const DownloadButton = ({ format, service, slipRef }) => {
     const [generating, setGenerating] = useState(false);
-    const [url, setUrl] = useState(null);
 
-    useEffect(() => {
-        // Cleanup function to revoke the object URL
-        return () => {
-            if (url) {
-                URL.revokeObjectURL(url);
-            }
-        };
-    }, [url]);
-
-    const handleGenerate = async () => {
+    const handleGenerateAndDownload = async () => {
         if (!slipRef.current) return;
         setGenerating(true);
-        setUrl(null);
         try {
             const blob = await generatePdfBlob(slipRef.current, format);
-            setUrl(URL.createObjectURL(blob));
+            const url = URL.createObjectURL(blob);
+            const filename = `${service.customerName.replace(/ /g, '_')}_${service.slipNo}.pdf`;
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
         } catch (error) {
             console.error(`Failed to generate ${format} PDF:`, error);
             alert('Sorry, there was an error creating the PDF.');
@@ -474,7 +560,6 @@ const DownloadButton = ({ format, service, slipRef }) => {
         }
     };
     
-    const filename = `${service.customerName.replace(/ /g, '_')}_${service.slipNo}.pdf`;
     const isA5 = format === 'a5';
     const baseClasses = "inline-flex items-center justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2";
     const a5Classes = "bg-green-600 hover:bg-green-700 focus:ring-green-500";
@@ -488,18 +573,10 @@ const DownloadButton = ({ format, service, slipRef }) => {
             </button>
         );
     }
-
-    if (url) {
-        return (
-            <a href={url} download={filename} className={`${baseClasses} ${isA5 ? a5Classes : a4Classes}`}>
-                Download {format.toUpperCase()} PDF
-            </a>
-        );
-    }
     
     return (
-        <button type="button" onClick={handleGenerate} className={`${baseClasses} ${isA5 ? a5Classes : a4Classes}`}>
-            Generate {format.toUpperCase()} PDF
+        <button type="button" onClick={handleGenerateAndDownload} className={`${baseClasses} ${isA5 ? a5Classes : a4Classes}`}>
+            Download {format.toUpperCase()} PDF
         </button>
     );
 };
@@ -575,6 +652,17 @@ const DownloadSlipModal = ({ service, onClose }) => {
         </div>
     );
 };
+
+// === NEW: Shared service options list ===
+const SERVICE_OPTIONS = [
+    "Runner", "Zip Fault", "Zip Replacement", "Material Tear", "Material Defect", 
+    "Material Peel Off", "Wheel Damage", "Shell Crack", "Shell Dent", "Full Replacement", 
+    "Buckle Replacement", "Sling Strap Repair", "Strap Repair/Replacement", 
+    "Handle Defect", "Handle Broken", "Lock Damage", "Trolley Not Working", 
+    "Trolley Replacement", "Lining Tear", "Stitching Repair", "Color Fading/Restoration", 
+    "Waterproofing", "Pocket Repair", "Frame Damage", "Logo/Badge Repair", 
+    "General Cleaning & Polishing"
+];
 
 
 // === From components/UpdateServiceModal.tsx ===
@@ -662,11 +750,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
     };
     if (!isOpen) return null;
     const serviceStatusOptions = ['New', 'In Service', 'Completed', 'Informed to Customer', 'Delivered to Customer'];
-    const serviceOptions = [
-        "Stitching", "Zip Repair/Replacement", "Runner Replacement", "Handle Repair/Replacement", 
-        "Strolly Wheel/Handle Repair", "Buckle Repair/Replacement", "Professional Cleaning", 
-        "Strap Adjustment/Replacement", "Lock Repair/Replacement", "Bags"
-    ];
+    
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
@@ -722,7 +806,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
                              <div className="mt-6">
                                 <h4 className="text-md font-semibold text-gray-700 mb-2">Service Description</h4>
                                 <MultiSelectDropdown
-                                    options={serviceOptions}
+                                    options={SERVICE_OPTIONS}
                                     selectedOptions={selectedServices}
                                     onChange={setSelectedServices}
                                 />
@@ -751,7 +835,7 @@ const UpdateServiceModal = ({ service, isOpen, onClose, onSuccess }) => {
                             {compressing && <div className="mt-4 flex items-center text-sm text-gray-600"><Spinner size="sm" /><span className="ml-2">Compressing image...</span></div>}
                             {imagePreview && !compressing && (
                                 <div className="mt-4">
-                                    <img src={imagePreview} alt="Product Preview" className="max-h-48 rounded-lg border border-gray-300 p-1"/>
+                                    <img src={imagePreview} crossOrigin="anonymous" alt="Product Preview" className="max-h-48 rounded-lg border border-gray-300 p-1"/>
                                 </div>
                             )}
                         </div>
@@ -786,7 +870,7 @@ const InputField = ({label, name, value, onChange, type = 'text', disabled = fal
 );
 
 
-// === From components/ServiceDataTable.tsx ===
+// === From components/ServiceDataTable.tsx (REFACTORED) ===
 const normalizeDateString = (dateInput) => {
     if (!dateInput) return '';
     const dateStr = String(dateInput).trim();
@@ -805,10 +889,7 @@ const getStatusColor = (status) => {
         default: return 'bg-gray-100 text-gray-800';
     }
 }
-const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
-    const [services, setServices] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
+const ServiceDataTable = ({ services, onEdit, onDownload, initialFilters }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [previewImageUrl, setPreviewImageUrl] = useState(null);
     const [statusFilter, setStatusFilter] = useState('All');
@@ -816,33 +897,18 @@ const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
     const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'descending' });
+    
     useEffect(() => {
-        const fetchServices = async () => {
-            setLoading(true);
-            setError(null);
-            try {
-                const data = await getAllServices();
-                const processedData = data
-                    .filter(row => row && row.slipNo && !isNaN(parseInt(String(row.slipNo), 10)))
-                    .map(service => ({
-                        ...service,
-                        date: normalizeDateString(service.date),
-                        warrantyDate: normalizeDateString(service.warrantyDate),
-                    }));
-                setServices(processedData);
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
-                setError(`Failed to fetch services: ${errorMessage}`);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchServices();
-    }, [refreshKey]);
+        if(initialFilters && initialFilters.status) {
+            setStatusFilter(initialFilters.status);
+        }
+    }, [initialFilters]);
+
     const servicemen = useMemo(() => {
         const names = new Set(services.map(s => s.servicemanName).filter(name => name && name.trim() !== ''));
         return ['All', ...Array.from(names).sort()];
     }, [services]);
+
     const sortedAndFilteredServices = useMemo(() => {
         let filteredData = [...services];
         if (statusFilter !== 'All') {
@@ -885,6 +951,7 @@ const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
         }
         return filteredData;
     }, [services, searchTerm, statusFilter, servicemanFilter, startDate, endDate, sortConfig]);
+
     const requestSort = (key) => {
         let direction = 'ascending';
         if (sortConfig.key === key && sortConfig.direction === 'ascending') {
@@ -892,6 +959,7 @@ const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
         }
         setSortConfig({ key, direction });
     };
+
     const getSortIcon = (key) => {
         if (sortConfig.key !== key) {
             return <i className="fas fa-sort text-gray-400 ml-1"></i>;
@@ -901,22 +969,15 @@ const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
         }
         return <i className="fas fa-sort-down ml-1 text-gray-800"></i>;
     };
+
     const handleImageClick = (imageUrl) => {
         setPreviewImageUrl(getDirectGoogleDriveImageUrl(imageUrl));
     };
+
     const handleClosePreview = () => {
         setPreviewImageUrl(null);
     };
-    if (loading) {
-        return (
-            <div className="flex justify-center items-center h-64">
-                <Spinner size="lg" />
-            </div>
-        );
-    }
-    if (error) {
-        return <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>;
-    }
+
     return (
         <div className="bg-white p-4 sm:p-6 lg:p-8 rounded-2xl shadow-lg">
             <h2 className="text-3xl font-bold text-gray-800 mb-6">Service Data</h2>
@@ -997,6 +1058,7 @@ const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
                                 <td className="px-4 py-4 whitespace-nowrap">
                                     <img
                                         src={getDirectGoogleDriveImageUrl(service.imageUrl)}
+                                        crossOrigin="anonymous"
                                         alt={service.productName}
                                         className="w-12 h-12 object-cover rounded-md cursor-pointer hover:opacity-80 transition-opacity"
                                         onClick={() => handleImageClick(service.imageUrl)}
@@ -1033,7 +1095,7 @@ const ServiceDataTable = ({ onEdit, onDownload, refreshKey }) => {
                         ))}
                     </tbody>
                 </table>
-                 {sortedAndFilteredServices.length === 0 && !loading && (
+                 {sortedAndFilteredServices.length === 0 && (
                     <div className="text-center py-8 text-gray-500">
                         <p className="font-semibold">No service records found.</p>
                         <p className="text-sm mt-1">Try adjusting your search or filters.</p>
@@ -1176,11 +1238,7 @@ const ServiceEntryForm = ({ onSuccess }) => {
             setSubmitting(false);
         }
     };
-    const serviceOptions = [
-        "Stitching", "Zip Repair/Replacement", "Runner Replacement", "Handle Repair/Replacement", 
-        "Strolly Wheel/Handle Repair", "Buckle Repair/Replacement", "Professional Cleaning", 
-        "Strap Adjustment/Replacement", "Lock Repair/Replacement", "Bags"
-    ];
+    
     return (
          <div className="max-w-4xl mx-auto bg-white p-8 rounded-2xl shadow-lg">
             <h2 className="text-3xl font-bold text-gray-800 mb-2 text-center">New Service Entry</h2>
@@ -1238,7 +1296,7 @@ const ServiceEntryForm = ({ onSuccess }) => {
                 <div className="p-6 border border-gray-200 rounded-lg">
                     <h3 className="text-lg font-semibold text-gray-700 mb-4 flex items-center"><i className="fas fa-tools mr-3 text-purple-500"></i>Service Description *</h3>
                      <MultiSelectDropdown
-                        options={serviceOptions}
+                        options={SERVICE_OPTIONS}
                         selectedOptions={selectedServices}
                         onChange={setSelectedServices}
                         placeholder="Select required services..."
@@ -1295,7 +1353,7 @@ const ServiceEntryForm = ({ onSuccess }) => {
 };
 
 
-// === From components/Sidebar.tsx ===
+// === From components/Sidebar.tsx (UPDATED) ===
 const NavLink = ({ page, currentPage, onNavigate, icon, label }) => {
     const isActive = currentPage === page;
     return (
@@ -1344,6 +1402,7 @@ const Sidebar = ({ currentPage, navigate, isOpen, setIsOpen }) => {
                 </div>
                 <nav className="flex-1 px-4 py-4">
                     <ul className="space-y-2">
+                        <NavLink page="dashboard" currentPage={currentPage} onNavigate={() => handleNavigate('dashboard')} icon="fas fa-tachometer-alt" label="Dashboard" />
                         <NavLink page="entry" currentPage={currentPage} onNavigate={() => handleNavigate('entry')} icon="fas fa-clipboard-list" label="Service Entry" />
                         <NavLink page="data" currentPage={currentPage} onNavigate={() => handleNavigate('data')} icon="fas fa-database" label="Service Data" />
                     </ul>
@@ -1354,41 +1413,169 @@ const Sidebar = ({ currentPage, navigate, isOpen, setIsOpen }) => {
 };
 
 
-// === From App.tsx ===
+// === NEW: Dashboard Component ===
+const StatCard = ({ title, value, icon, color, onClick }) => (
+    <div 
+        onClick={onClick}
+        className={`bg-white p-6 rounded-2xl shadow-lg flex items-center space-x-4 ${onClick ? 'cursor-pointer transition-transform transform hover:scale-105' : ''}`}
+    >
+        <div className={`w-16 h-16 rounded-full flex items-center justify-center ${color}`}>
+            <i className={`fas ${icon} text-white text-2xl`}></i>
+        </div>
+        <div>
+            <p className="text-gray-500 text-sm font-medium uppercase tracking-wider">{title}</p>
+            <p className="text-3xl font-bold text-gray-800">{value}</p>
+        </div>
+    </div>
+);
+const Dashboard = ({ services, onNavigateWithFilters }) => {
+    const stats = useMemo(() => {
+        const statusCounts = services.reduce((acc, service) => {
+            const status = service.serviceStatus || 'N/A';
+            acc[status] = (acc[status] || 0) + 1;
+            return acc;
+        }, {});
+
+        return {
+            total: services.length,
+            new: statusCounts['New'] || 0,
+            inService: statusCounts['In Service'] || 0,
+            completed: statusCounts['Completed'] || 0,
+            informed: statusCounts['Informed to Customer'] || 0,
+            delivered: statusCounts['Delivered to Customer'] || 0,
+        };
+    }, [services]);
+
+    const handleCardClick = (status) => {
+        if (status) {
+            onNavigateWithFilters('data', { status });
+        } else {
+            onNavigateWithFilters('data');
+        }
+    };
+
+    return (
+        <div className="space-y-8">
+            <h1 className="text-4xl font-bold text-gray-800">Dashboard</h1>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <StatCard title="Total Services" value={stats.total} icon="fa-tools" color="bg-purple-500" onClick={() => handleCardClick('All')} />
+                <StatCard title="New" value={stats.new} icon="fa-star" color="bg-blue-500" onClick={() => handleCardClick('New')} />
+                <StatCard title="In Service" value={stats.inService} icon="fa-cogs" color="bg-yellow-500" onClick={() => handleCardClick('In Service')} />
+                <StatCard title="Completed" value={stats.completed} icon="fa-check-circle" color="bg-green-500" onClick={() => handleCardClick('Completed')} />
+                <StatCard title="Informed Customer" value={stats.informed} icon="fa-bell" color="bg-indigo-500" onClick={() => handleCardClick('Informed to Customer')} />
+                <StatCard title="Delivered" value={stats.delivered} icon="fa-truck" color="bg-gray-500" onClick={() => handleCardClick('Delivered to Customer')} />
+            </div>
+        </div>
+    );
+};
+
+
+// === From App.tsx (REFACTORED) ===
 const App = () => {
-    const [currentPage, setCurrentPage] = useState('entry');
+    const [currentPage, setCurrentPage] = useState('dashboard');
     const [selectedService, setSelectedService] = useState(null);
     const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
     const [refreshDataKey, setRefreshDataKey] = useState(0);
     const [showSlipFor, setShowSlipFor] = useState(null);
     const [serviceToDownload, setServiceToDownload] = useState(null);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+    // Lifted state for services data
+    const [services, setServices] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [initialFilters, setInitialFilters] = useState({});
+
+    // Lifted data fetching logic
+    useEffect(() => {
+        const fetchServices = async () => {
+            setLoading(true);
+            setError(null);
+            try {
+                const data = await getAllServices();
+                const processedData = data
+                    .filter(row => row && row.slipNo && !isNaN(parseInt(String(row.slipNo), 10)))
+                    .map(service => ({
+                        ...service,
+                        date: normalizeDateString(service.date),
+                        warrantyDate: normalizeDateString(service.warrantyDate),
+                    }));
+                setServices(processedData);
+            } catch (err) {
+                const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+                setError(`Failed to fetch services: ${errorMessage}`);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchServices();
+    }, [refreshDataKey]);
+
     const handleEditService = (service) => {
         setSelectedService(service);
         setIsUpdateModalOpen(true);
     };
+
     const handleCloseModal = () => {
         setSelectedService(null);
         setIsUpdateModalOpen(false);
     };
+
     const handleUpdateSuccess = () => {
         handleCloseModal();
         setRefreshDataKey(prevKey => prevKey + 1);
     };
+
     const handleNewServiceSuccess = (newService) => {
         setShowSlipFor(newService);
     };
+
     const handleCloseSlipModal = () => {
         setShowSlipFor(null);
         setRefreshDataKey(prevKey => prevKey + 1);
         setCurrentPage('data');
     };
+
     const handleDownloadRequest = (service) => {
         setServiceToDownload(service);
     };
+
     const navigate = (page) => {
+        setInitialFilters({}); // Reset filters on direct navigation
         setCurrentPage(page);
     };
+
+    const handleNavigateWithFilters = (page, filters = {}) => {
+        setInitialFilters(filters);
+        setCurrentPage(page);
+    };
+
+    const pageTitles = {
+        dashboard: 'Dashboard',
+        entry: 'Service Entry',
+        data: 'Service Data'
+    };
+
+    const renderContent = () => {
+        if (loading && services.length === 0) {
+            return <div className="flex justify-center items-center h-full"><Spinner size="lg" /></div>;
+        }
+        if (error) {
+            return <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>;
+        }
+
+        switch (currentPage) {
+            case 'dashboard':
+                return <Dashboard services={services} onNavigateWithFilters={handleNavigateWithFilters} />;
+            case 'entry':
+                return <ServiceEntryForm onSuccess={handleNewServiceSuccess} />;
+            case 'data':
+                return <ServiceDataTable services={services} onEdit={handleEditService} onDownload={handleDownloadRequest} initialFilters={initialFilters} />;
+            default:
+                return null;
+        }
+    };
+
     return (
         <div className="flex h-screen bg-gray-100 font-sans">
             <Sidebar 
@@ -1400,7 +1587,7 @@ const App = () => {
              <div className="flex-1 flex flex-col overflow-hidden">
                 <header className="bg-white shadow p-4 flex justify-between items-center md:hidden">
                     <h1 className="text-xl font-bold text-gray-800">
-                        {currentPage === 'entry' ? 'Service Entry' : 'Service Data'}
+                        {pageTitles[currentPage]}
                     </h1>
                     <button 
                         onClick={() => setIsSidebarOpen(true)}
@@ -1411,8 +1598,7 @@ const App = () => {
                     </button>
                 </header>
                 <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
-                    {currentPage === 'entry' && <ServiceEntryForm onSuccess={handleNewServiceSuccess} />}
-                    {currentPage === 'data' && <ServiceDataTable onEdit={handleEditService} onDownload={handleDownloadRequest} refreshKey={refreshDataKey} />}
+                    {renderContent()}
                 </main>
             </div>
             {isUpdateModalOpen && selectedService && (
