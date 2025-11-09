@@ -2055,7 +2055,7 @@ const Settings = ({ onSettingsChange }) => {
     );
 };
 
-// === Main App Component ===
+// === Main App Component (UPDATED FOR RESPONSIVENESS) ===
 const App = () => {
     const [activeView, setActiveView] = useState('dashboard');
     const [services, setServices] = useState([]);
@@ -2068,13 +2068,13 @@ const App = () => {
     const [initialDataFilters, setInitialDataFilters] = useState(null);
     const [serviceToComplete, setServiceToComplete] = useState(null);
     const [_, forceSettingsUpdate] = useState(0); // Dummy state to trigger re-renders
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false); // State for mobile sidebar
 
     const fetchServices = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
             const data = await getAllServices();
-            // [BUG FIX] Filter out any row that might be a header from the sheet data
             const filteredData = data.filter(row => row && typeof row === 'object' && row.slipNo !== 'Slip No');
             
             const normalizedData = filteredData.map(service => ({
@@ -2102,13 +2102,13 @@ const App = () => {
     const handleFormSuccess = (newService) => {
         setSelectedServiceForModal(newService);
         setIsSlipModalOpen(true);
-        fetchServices(); // Refresh the list
+        fetchServices();
     };
 
     const handleCompletionSuccess = () => {
-        setActiveView('data'); // Go back to data table
-        setServiceToComplete(null); // Reset the state
-        fetchServices(); // Refresh data
+        setActiveView('data');
+        setServiceToComplete(null);
+        fetchServices();
     };
     
     const handleEditService = (service) => {
@@ -2170,11 +2170,12 @@ const App = () => {
     const SidebarLink = ({ view, icon, label }) => (
         <button
             onClick={() => {
-                setInitialDataFilters(null); // Clear filters when manually changing views
+                setInitialDataFilters(null);
                 if (view !== 'entry') {
-                    setServiceToComplete(null); // Clear completion state if navigating away
+                    setServiceToComplete(null);
                 }
                 setActiveView(view);
+                setIsSidebarOpen(false); // Close sidebar on navigation
             }}
             className={`flex items-center w-full text-left px-4 py-3 rounded-lg transition-colors duration-200 ${
                 activeView === view
@@ -2188,8 +2189,17 @@ const App = () => {
     );
 
     return (
-        <div className="flex h-screen bg-gray-100 font-sans">
-            <aside className="w-64 bg-white shadow-lg p-4 flex-shrink-0">
+        <div className="relative min-h-screen md:flex bg-gray-100 font-sans">
+            {/* Overlay for mobile */}
+            {isSidebarOpen && (
+                 <div 
+                    className="fixed inset-0 bg-black bg-opacity-50 z-20 md:hidden"
+                    onClick={() => setIsSidebarOpen(false)}
+                    aria-hidden="true"
+                ></div>
+            )}
+
+            <aside className={`fixed inset-y-0 left-0 z-30 w-64 bg-white shadow-lg p-4 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
                 <div className="flex items-center space-x-3 p-2 mb-6">
                      <div className="flex-shrink-0 bg-purple-600 p-3 rounded-md shadow-md">
                         <i className="fas fa-tools text-white text-xl fa-fw"></i>
@@ -2209,6 +2219,26 @@ const App = () => {
             </aside>
 
             <main className="flex-1 p-6 lg:p-10 overflow-y-auto">
+                 {/* Mobile Header */}
+                <header className="md:hidden flex items-center justify-between mb-6">
+                    <div className="flex items-center space-x-3">
+                        <div className="flex-shrink-0 bg-purple-600 p-2 rounded-md shadow-sm">
+                            <i className="fas fa-tools text-white text-lg fa-fw"></i>
+                        </div>
+                        <div>
+                            <h1 className="text-lg font-extrabold text-gray-800">Service Hub</h1>
+                            <p className="text-xs text-gray-500">Roshan Bags</p>
+                        </div>
+                    </div>
+                    <button 
+                        onClick={() => setIsSidebarOpen(true)} 
+                        className="text-gray-600 p-2 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-purple-500"
+                        aria-label="Open sidebar"
+                    >
+                        <i className="fas fa-bars fa-lg"></i>
+                    </button>
+                </header>
+
                 {renderView()}
             </main>
 
