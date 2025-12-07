@@ -4,6 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    
     <link rel="icon" type="image/svg+xml" href="https://www.roshanbags.com/Images/icons/package.svg" />
     <title>Stock Entry Management Pro</title>
     
@@ -882,9 +883,13 @@ function response(data) {
              </div>
           );
           return (
-            <div className="flex flex-col h-full bg-slate-100 rounded-xl border border-slate-200 overflow-hidden relative">
+            <div className="flex flex-col h-full bg-[url('https://www.transparenttextures.com/patterns/brick-wall.png')] bg-repeat rounded-xl border border-slate-200 overflow-hidden relative">
                <div className="flex-1 overflow-auto p-8 flex justify-center"><div className="flex gap-16 min-w-max"><div className="flex flex-col gap-4"><div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Left Wing</div>{RACKS_LEFT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}</div><div className="flex flex-col items-center px-8 border-x-2 border-dashed border-slate-200 bg-slate-50/50 rounded-3xl"><div className="flex items-center gap-2 mb-8 mt-4"><span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Central Aisle</span><button onClick={onConfigAisle} className="p-1 hover:bg-slate-200 rounded text-gray-400"><Settings2 size={14}/></button></div><div className="flex flex-col justify-center gap-8">{aisleLayout.map(group => renderAisleRow(group))}</div></div><div className="flex flex-col gap-4"><div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Right Wing</div>{RACKS_RIGHT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}</div></div></div>
-               <div className="absolute bottom-6 right-8 pointer-events-none"><div className="flex flex-col items-end gap-1 opacity-50"><div className="h-16 w-1 bg-slate-900 rounded-full"></div><div className="text-xs font-bold uppercase tracking-widest text-slate-900">Entrance</div></div></div>
+               <div className="absolute bottom-6 right-8 pointer-events-none"><div className="flex flex-col items-end gap-1 opacity-50">           
+                <div className="relative">
+  <div className="h-16 w-2 bg-slate-900 rounded-full shadow-lg"></div>
+  <div className="absolute top-0 left-1 h-16 w-1 bg-slate-700 rounded-full"></div>
+</div> <div className="text-xs font-bold uppercase tracking-widest text-slate-900">Entrance</div></div></div>
             </div>
           );
         };
@@ -1218,4 +1223,3 @@ function response(data) {
     </script>
 </body>
 </html>
-
