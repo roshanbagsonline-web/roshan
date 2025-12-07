@@ -1,0 +1,1219 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stock Entry Management Pro</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Babel for on-the-fly JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+      body { font-family: 'Inter', sans-serif; }
+      
+      /* Hide Number Input Spinners */
+      input::-webkit-outer-spin-button,
+      input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      input[type=number] {
+        -moz-appearance: textfield;
+      }
+      
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background: #f1f1f1; 
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #cbd5e1; 
+        border-radius: 4px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8; 
+      }
+      
+      /* Animation Utilities */
+      .animate-in { animation-duration: 0.3s; animation-fill-mode: both; }
+      .fade-in { animation-name: fadeIn; }
+      .slide-in-from-bottom-4 { animation-name: slideInFromBottom; }
+      .zoom-in-95 { animation-name: zoomIn; }
+      
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes slideInFromBottom { from { transform: translateY(1rem); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      @keyframes zoomIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+      /* SEARCH HIGHLIGHT ANIMATION */
+      @keyframes blink-attention {
+        0%, 100% { 
+          border-color: #ef4444; 
+          background-color: #fee2e2; 
+          box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2); 
+        }
+        50% { 
+          border-color: #b91c1c; 
+          background-color: #fca5a5; 
+          box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.5); 
+        }
+      }
+      
+      .animate-blink-red {
+        animation: blink-attention 1.5s infinite ease-in-out;
+        z-index: 20 !important;
+      }
+    </style>
+</head>
+<body class="bg-gray-50 text-slate-900">
+    <div id="root"></div>
+
+    <!-- 
+      ========================================
+      GOOGLE APPS SCRIPT SOURCE CODE
+      Copy the code below into your Google Script Editor
+      ========================================
+    -->
+    <script type="text/plain" id="google-script-source">
+/* 
+  StockPro Google Apps Script 
+  Handles saving Stock Entries, System Configuration, Fetching Last SKU, Stock View Data, and Updating Locations.
+*/
+
+function doGet(e) {
+  return handleRequest(e);
+}
+
+function doPost(e) {
+  return handleRequest(e);
+}
+
+function handleRequest(e) {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(30000);
+
+  try {
+    let action = '';
+    let payload = {};
+
+    if (e.postData && e.postData.contents) {
+      try {
+        const body = JSON.parse(e.postData.contents);
+        action = body.action;
+        payload = body.data;
+      } catch (jsonErr) {
+        return response({ status: 'error', message: 'Invalid JSON body' });
+      }
+    } else if (e.parameter) {
+      action = e.parameter.action;
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // --- 1. SAVE PRODUCT ENTRIES ---
+    if (action === 'SAVE_PRODUCT') {
+      const sheet = getOrCreateSheet(ss, 'Entries');
+      const rows = payload; 
+      if (rows && rows.length > 0) {
+        const startRow = Math.max(sheet.getLastRow() + 1, 2); 
+        sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
+      }
+      return response({ status: 'success', message: 'Entries saved successfully' });
+    }
+
+    // --- 2. SAVE CONFIGURATION ---
+    if (action === 'SAVE_CONFIG') {
+      const sheet = getOrCreateSheet(ss, 'System Configuration');
+      sheet.clear(); 
+      const rows = [['TYPE', 'VALUE']]; 
+      if (payload.brands) payload.brands.forEach(function(b) { rows.push(['BRAND', b]); });
+      if (payload.materials) payload.materials.forEach(function(m) { rows.push(['MATERIAL', m]); });
+      if (payload.categoryRules) payload.categoryRules.forEach(function(r) { rows.push(['RULE', JSON.stringify(r)]); });
+      sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+      return response({ status: 'success', message: 'Configuration saved' });
+    }
+
+    // --- 3. GET CONFIGURATION ---
+    if (action === 'GET_CONFIG') {
+      const sheet = getOrCreateSheet(ss, 'System Configuration');
+      const lastRow = sheet.getLastRow();
+      const config = { brands: [], materials: [], categoryRules: [] };
+      if (lastRow > 1) {
+        const data = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+        for (let i = 0; i < data.length; i++) {
+          const type = data[i][0];
+          const value = data[i][1];
+          if (type === 'BRAND') config.brands.push(value);
+          if (type === 'MATERIAL') config.materials.push(value);
+          if (type === 'RULE') { try { config.categoryRules.push(JSON.parse(value)); } catch (err) {} }
+        }
+      }
+      return response({ status: 'success', data: config });
+    }
+
+    // --- 4. GET LAST SKU ---
+    if (action === 'GET_LAST_SKU') {
+      const sheet = getOrCreateSheet(ss, 'Entries');
+      const lastRow = sheet.getLastRow();
+      let lastSku = "";
+      if (lastRow > 1) {
+        const startRow = Math.max(2, lastRow - 50);
+        const numRows = lastRow - startRow + 1;
+        const data = sheet.getRange(startRow, 1, numRows, 1).getValues();
+        for (let i = data.length - 1; i >= 0; i--) {
+          if (data[i][0] && data[i][0] !== "") {
+            lastSku = data[i][0].toString();
+            break;
+          }
+        }
+      }
+      return response({ status: 'success', lastSku: lastSku });
+    }
+
+    // --- 5. GET STOCK DATA ---
+    if (action === 'GET_STOCK_DATA') {
+      const sheet = getOrCreateSheet(ss, 'STOCKS');
+      const lastRow = sheet.getLastRow();
+      const stockData = [];
+      if (lastRow > 1) {
+        const data = sheet.getRange(2, 1, lastRow - 1, 26).getValues(); // A to Z
+        for (let i = 0; i < data.length; i++) {
+          const row = data[i];
+          const sku = row[11]; // Col L
+          const storageId = row[25]; // Col Z
+          if (sku) {
+            stockData.push({
+              sku: sku.toString(),
+              name: row[3], // Col D
+              mrp: row[5],  // Col F
+              location: storageId ? storageId.toString() : "Unassigned"
+            });
+          }
+        }
+      }
+      return response({ status: 'success', data: stockData });
+    }
+
+    // --- 6. UPDATE STOCK LOCATION ---
+    if (action === 'UPDATE_STOCK_LOCATION') {
+      const sheet = getOrCreateSheet(ss, 'STOCKS');
+      const lastRow = sheet.getLastRow();
+      const targetSku = String(payload.sku || "").trim().toUpperCase();
+      const newLocation = payload.location;
+      let updated = false;
+
+      if (lastRow > 1) {
+        const skuData = sheet.getRange(2, 12, lastRow - 1, 1).getValues();
+        for (let i = 0; i < skuData.length; i++) {
+          const rowSku = String(skuData[i][0] || "").trim().toUpperCase();
+          if (rowSku === targetSku) {
+            sheet.getRange(i + 2, 26).setValue(newLocation);
+            updated = true;
+            break; 
+          }
+        }
+      }
+      
+      if (updated) {
+        return response({ status: 'success', message: 'Location updated' });
+      } else {
+        return response({ status: 'error', message: 'SKU "' + targetSku + '" not found in STOCKS sheet. Ensure it is synced from Entries.' });
+      }
+    }
+
+    return response({ status: 'error', message: 'Unknown Action: ' + action });
+
+  } catch (error) {
+    return response({ status: 'error', message: error.toString() });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getOrCreateSheet(ss, name) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+  }
+  return sheet;
+}
+
+function response(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+    </script>
+
+    <!-- Main Application Code -->
+    <script type="text/babel" data-presets="react,typescript" data-type="module">
+        import React, { useState, useEffect, useMemo, useRef } from 'https://esm.sh/react@18.2.0';
+        import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client';
+        import { 
+          Plus, Trash2, Save, RotateCcw, Download, Layers, X, ArrowRight, 
+          LayoutDashboard, ShoppingBag, Settings, Package, Menu, ChevronRight, AlertCircle,
+          Tag, Box, Hash, Ruler, FileText, CheckCircle2, DollarSign, Type, Globe, ShieldCheck, Briefcase, ChevronDown, Check, Cloud, RefreshCw, UploadCloud, Link, Eye, Edit3, Search, MapPin, Archive, PenLine, LayoutGrid, List, DoorOpen, Ban, Boxes, Minus, GripVertical, Settings2, ArrowUp, ArrowDown, Loader2
+        } from 'https://esm.sh/lucide-react@0.263.1';
+        import * as XLSX from 'https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs';
+
+        // ==========================================
+        // 1. TYPES & CONSTANTS
+        // ==========================================
+        
+        const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz0-3rNJYwU4SK8a1XiaIGzcjt34QYt9Aha2TnC7OEz63oADhW3LOlI-ZtDamC2HMxr/exec";
+
+        const INITIAL_CATEGORY_RULES = [
+          { mainCategory: "LUGGAGE", subCategory1: "HARD", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "SOFT", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "SET OF 3 COMBOS", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "KIDS LUGGAGE", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "BRIEFCASE", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "STUDENT OFFER", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "SATCHEL", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "TOTE", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "SLING BAG", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "LEATHER BAG", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "SHOPPING TOTE", subCategory2: [] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "SCHOOL", subCategory2: ["KG to Grade 1", "Grade 2 to Grade 6", "Grade 7 and Above"] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "COLLEGE", subCategory2: ["Unisex", "Women"] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "LUNCH BAGS", subCategory2: [] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "MESSENGER BAGS", subCategory2: [] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "SCHOOL BAG WITH TROLLEY", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "DUFFLE BAGS", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "DUFFLE TROLLEY", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "GYM BAG", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "RUCKSACK", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "TRAVEL SLING", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "TOILETRY KIT", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "WALLETS", subCategory2: ["MENS", "WOMENS"] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "VANITY CASE AND POUCH", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "KIDS BAG", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "MATERNITY BAG", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "LAPTOP OVERNIGHTER", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "LAPTOP BACKPACK", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "EXECUTIVE BAGS", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "BACKPACK WITH TROLLEY", subCategory2: [] },
+        ];
+
+        const INITIAL_BRANDS = ["Roshan", "American Tourister", "Skybags", "Safari"];
+        const INITIAL_MATERIALS = ["Polyester", "Nylon", "Leather", "Canvas", "Hard Shell (ABS)", "Polycarbonate"];
+
+        const SIZE_OPTIONS = ["No Size", "Small", "Medium", "Large", "Cabin", "Check-in"];
+        const COLOR_OPTIONS = ["Black", "Teal", "Grey", "Blue", "Red", "Green", "Navy", "Peach", "Natural Brown", "White", "Yellow"];
+        
+        const WARRANTY_OPTIONS = [
+          "No warranty", "3 Months warranty", "6 Months warranty", "18 Months warranty", "1 Year warranty", "3 Years warranty", "5 Years warranty", "10 Years warranty"
+        ];
+        
+        const RACKS_LEFT = ['H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
+        const RACKS_RIGHT = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+        const SHELF_LEVELS = ['0', '1', '2', '3', '4'];
+        
+        const DEFAULT_AISLE_LAYOUT = [
+          { id: 'g1', name: 'Row 1', boxes: ['Box 1', 'Box 2', 'Box 3'] },
+          { id: 'g2', name: 'Row 2', boxes: ['Box 4', 'Box 5', 'Box 6'] },
+          { id: 'g3', name: 'Row 3', boxes: ['Box 7', 'Box 8', 'Box 9'] },
+          { id: 'g4', name: 'Row 4', boxes: ['Box 10', 'Box 11', 'Box 12'] },
+        ];
+
+        const DESCRIPTION_DEFAULTS = {
+          compartment: "", additionalCompartment: "", interiorPockets: "", exteriorPockets: "",
+          organizerPockets: "", quickAccessPockets: "", handles: "", bottomBushes: "",
+          wheel: "", strolly: "", lock: "", technology: "", rainCover: "", slingStrap: "",
+          waterBottle: "", materialQuality: "", laptop: "", zipClosure: "", additionalFeatures: ""
+        };
+
+        const ATTRIBUTE_OPTIONS = {
+          compartment: ["1 Main Compartment", "2 Main Compartment", "3 Main Compartment", "Spacious Main Compartment", "2 Spacious Main Compartment", "3 Spacious Main Compartment", "Wide currency pocket accommodates various bills", "Flat currency slot designed for easy retrieval", "Organized currency slot for easy access", "Spacious currency slot for bills and notes", "Large main section for easy access", "Roomy main compartment with adjustable dividers", "Main compartment with ample packing space", "Spacious Interior", "Spacious Main Compartment with Magnetic Button Closure", "4 Spacious Main Compartment", "50-50 Split Compartment – Balanced storage with a center-zippered divider for easy organization."],
+          additionalCompartment: ["Additional Front Compartment", "Additional 2 Exterior Compartment", "Multiple card slots for organized storage", "Convenient card slots for easy access", "Addition 2 Side Slip Pocket", "Additional 2 Side Zip Pocket", "Centre Zip Partition", "Front Secret Zip Pocket", "Front & Back Slip Pocket", "Front Slip Pocket", "Additional 4 Side Zip Pocket", "Separate Shoe Section with Zip Closure"],
+          interiorPockets: ["Interior Zip Pocket", "2 Inside Zip Pockets", "Multiple Inside Zip pockets", "Divider Partition", "Divided Partition With Zip pocket", "Convenient coin slot with secure closure", "Zippered coin pocket for organized storage", "Sturdy coin slot keeps change in place", "Mesh interior pockets for visibility and access", "Various interior pockets for efficient organization", "Interior Zip and Slip Pocket", "Interior Slip Pocket"],
+          exteriorPockets: ["Additional Exterior Pocket", "Front Zip pocket", "Back Zip Pocket", "Front & Back Zip Pocket", "Top Side Zip Pocket", "Side Zip Pocket", "Back Zip & Slip Pocket", "Designed with a front zip pocket for quick access to frequently used items."],
+          organizerPockets: ["Interior Organizer Pocket", "Multi Interior Accessories Pockets", "Wet Pouches & Organizer pockets", "Multiple zip pockets and built-in organizers for better storage"],
+          quickAccessPockets: ["Quick-access pockets ", " Easy-to-open zippers", "Quick Access Fron Zip pocket", "Keep tiny essentials handy with a sleek side pocket"],
+          handles: ["Reinforced top handle for a secure grip_ making it easy to carry the bag effortlessly", "2 Soft Comfy Handles", "Heavy & Strong Handles", "Top Handle", "Side Handle", "Top and Side handles", "Single handle design for effortless transport", "Ergonomic single handle for comfortable grip", "Dual soft handles for comfortable lifting", "Soft handles on two sides for versatile carrying", "Sturdy side handle for easy lifting and handling", "Strong side handle for secure lifting", "Reinforced top handle for sturdy support", "Top handle for quick and easy grab-and-go", "Convenient top and side handles for easy maneuvering", "Padded top and side handles for added comfort", "Ergonomic top and side handles for comfortable grip", "Comfy Single Handle", "Cushion Padded Shoulder Strap", "Dual Tube Pull Handle"],
+          bottomBushes: ["2 Bottom Bushes For Safety", "4 Bottom Bushes For Safety", "5 Bottom Bushesh For Safety", "Padded with 2 Bottom bushes", "Padded with 4 Bottom Bushes", "Padded with 5 Bottom Bushes", "3 Side Bushes For Safety", "4 Side Bushes For Safety", "3 Side Bottom For Safety", "Textured, padded bottom designed to absorb shocks and protect belongings", "Provides extra grip when placed on various surfaces, preventing sliding", "4 Bottom Steel Nut"],
+          wheel: ["Smooth and silent strolly wheel movement", "Durable wheels for effortless travel", "360-degree wheels for easy maneuvering", "Shock-absorbing wheels for smooth rides", "Increased support with double wheels", "Double wheels for improved balance", "Double wheels provide enhanced stability", "Effortless navigation with double wheels", "360-degree dual wheels"],
+          strolly: ["Telescopic trolley handle for easy adjustment", "Durable handle for heavy-duty use", "Smooth, extendable handle for quick access", "Adjustable handle for personalized height", "Lightweight handle for easy lifting"],
+          lock: ["Secure number lock for safe travel.", "Customizable number lock for protection", "Convenient number lock for quick access", "Compact number lock for safe storage", "Lock with TSA-approved combination security", "Airport security-friendly TSA lock design", "TSA lock ensures safe luggage inspection"],
+          technology: ["Built-in USB port for charging", "Keep charged with USB convenience", "Keep data safe with RFID", "RFID blocking for secure travel", "RFID blocking protects credit cards", "RFID protection blocks unauthorized scanning", "Integrated RFID protection and USB charging", "ecure RFID blocking and USB charging", "Built-in USB port for charging- For cabin Size Only"],
+          rainCover: ["Weather-resistant rain cover for complete protection", "Rain cover ensures your items stay dry", "Secure your gear with a rain cover", "Protective rain cover for all-weather use"],
+          slingStrap: ["Easily detachable sling strap for convenience", "Detachable sling strap for adjustable carrying", "Switch between styles with removable sling", "Non-removable sling strap for secure carry", "Non-detachable sling strap ensures durability", "Secure, non-removable sling strap for reliability", "Adjustable and removable shoulder straps included", "Switch between styles with removable shoulder straps", "Fixed backpack straps for consistent comfort", "Integrated shoulder straps ensure stability", "Compression straps for organized and stable packing.", "Packing straps to prevent shifting during travel", "Adjustable packing straps for secure packing", "Cross straps to keep items in place", "Padded Sholder Strap For Comfort & Ease Of Carrying", "Tractum-Suspension Strap helps distribute weight evenly, improving comfort and reducing strain on your shoulders"],
+          waterBottle: ["Side pocket securely holds your water bottle", "Side water bottle holder for quick hydration", "Keep your bottle handy with side holder", "Efficient one-side water bottle storage", "Single-side bottle holder for efficient use", "Double-side design for extra bottle storage", "Dual-side pockets for easy hydration", "Two Side Water Bottle Holder", "Interior Water Bottle Holder"],
+          materialQuality: ["High-quality material for durability and style", "Top-grade material offers lasting performance", "Standard fabric ensures good performance", "Environmentally friendly fabric with quality durability", "Recycled material ensures eco-conscious quality", "Green material for lasting performance and eco-friendliness", "Durable and washable standard material for everyday use", "Recycled_ easy-to-clean fabric with quality durability", "Durable_ water-resistant_ and washable for all weather"],
+          laptop: ["Protective laptop sleeve with secure closure", "Laptop sleeve with cushioned padding for safety", "Padded laptop sleeve for secure protection", "Protective laptop holder with quick access", "Integrated laptop and tablet holders for convenience", "Dual compartments for laptop and tablet storage", "Secure and cushioned pockets for laptop and tablet", "Dedicated tablet compartment for safe storage", "File Holder", "Laptop Compatible [ Cabin Size Only ]", "Padded 15.6-inch Laptop Compartment"],
+          zipClosure: ["Classic zip closure for secure access", "Reliable standard zip for everyday use", "Durable zip closure for dependable security", "Dual zips for added security and access", "Flap closure for a stylish and practical design", "Secure magnetic fastenings for effortless use", "Convenient magnetic closure with a sleek design", "Lock closure for extra security during travel", "Secure lock closure for protecting valuables", "Lock closure for added security and peace of mind", "Multiple lock system for enhanced security, no zippers.", "Locking mechanisms without zips for extra protection", "Multiple lock closures for zip-free security", "Convenient drawstring closure for quick access", "Drawstring closure with a snug, adjustable fit", "Durable clip lock closure for dependable security", "Reliable clip lock for a tight and secure fit", "Dual zips with anti-theft technology", "Anti-theft zippers protect valuables"],
+          additionalFeatures: ["Expandable capacity for additional luggage space", "Expandable volume for extra packing space", "Increase storage with expandable capacity", "Packing cubes for hassle-free organization", "Travel smart with integrated packing cubes", "Protect your suit with an in-built blazer cover", "Built-in cover shields luggage from dirt and scratches", "Keep your bag clean with an attached cover", "Light Weight And Strong", "Air mesh passage on the back for improved ventilation and comfort", "Keeps your shoes organized and separate, protecting them and your clothes during travel.", "Trolley-Compatible Strap for Hands-Free Carrying", "Air Groove Plus TechnologyTM", "Features a scratch-resistant shell for lasting durability and a sleek look.", "Crafted with high-quality materials that balance durability and feather-light comfort ensuring long-lasting use without added bulk", "Designed for effortless carrying with a sturdy yet soft-grip handle that offers a comfortable hold making it easy to grab and go", "Detachable Mini Pouch – A stylish and functional side pouch, perfect for storing small essentials like coins, keys, or earphones, with a secure clip attachment for easy access and added convenience.", "Dual Shoulder Straps for Backpack-Style Carry", "Front zip pocket with magnetic button closure"]
+        };
+
+        const EXCEL_COLUMNS = [
+          "SKU", "Material_category", "Sub_category_level_1", "Sub_category_level_2", "HSN_code", "Seller_SKU", 
+          "Brand_name", "Product_ID", "Item_name_title", "Model_number", "Manufacturer", "Product_description", 
+          "Product_bullet_points", "Power_source_type", "Included_components", "Manufacturer_contact_details", 
+          "Item_type_name", "Number_of_packages", "Unit_count_per_product", "Unit_count_type", "Item_length", 
+          "Item_length_unit_of_measure", "Item_width", "Item_width_unit_of_measure", "Item_height", "Item_height_unit_of_measure", 
+          "Country_of_origin", "Your_selling_price", "Condition_type", "Currency", "Maximum_retail_price", 
+          "Sustainable_green_material_check", "Manufacturer_warranty_description", "Display_image_URL", "Other_images_URL", 
+          "Variation_theme", "Variation_type", "Parent_SKU", "Item_imported", "Importer_contact", "Manufacturer_part_number", 
+          "Update_delete", "Intended_product_use_with", "Model_year", "Search_keywords", "Color_names", "Pattern_name", 
+          "Size_name", "Primary_material_type", "Finish_type", "Plug_type", "Special_features", "Item_weight", 
+          "Item_weight_unit_of_measure", "Shipping_weight", "Shipping_weight_unit_of_measure", "Item_volume", 
+          "Item_volume_unit_of_measure", "Are_batteries_included", "Is_the_product_a_battery_itself", "Battery_type", 
+          "Battery_weight", "Battery_weight_unit_of_measure", "Voltage", "Safety_warning", "Legal_disclaimer", "Product_tax_code", 
+          "Maximum_order_ship_quantity", "Sale_price", "Sale_start_date", "Sale_end_date", "Fulfilment_latency", "Release_date", 
+          "Stop_selling_date", "Max_order_quantity", "Is_product_expirable", "Commission_percent", "Return_and_refund", 
+          "Warranty_term", "Inventory_Qty"
+        ];
+
+        // ==========================================
+        // 2. UTILITY LOGIC
+        // ==========================================
+
+        const fetchWithRetry = async (url, options, retries = 3, backoff = 1000) => {
+          for (let i = 0; i < retries; i++) {
+            try {
+              const response = await fetch(url, options);
+              if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+              return response;
+            } catch (e) {
+              if (i === retries - 1) throw e;
+              await new Promise(res => setTimeout(res, backoff * (i + 1))); 
+            }
+          }
+          throw new Error("Fetch failed after retries");
+        };
+
+        const SUB_CATEGORY_DISPLAY_MAP = {
+          "HARD": "Hard Luggage", "SOFT": "Soft Luggage", "SET OF 3 COMBOS": "Set of 3 Combo Luggage",
+          "KIDS LUGGAGE": "Kids Strolly", "BRIEFCASE": "Briefcase", "STUDENT OFFER": "luggage",
+          "SATCHEL": "Satchel Handbag", "TOTE": "Tote Handbag", "SLING BAG": "Women Crossbody Bag",
+          "LEATHER BAG": "Leather Handbag", "SHOPPING TOTE": "Shopping Tote Bag", "SCHOOL": "School Bag",
+          "COLLEGE": "College Backpack", "LUNCH BAGS": "Lunch Bag", "MESSENGER BAGS": "Messenger Bag",
+          "SCHOOL BAG WITH TROLLEY": "School Bag With Strolly", "DUFFLE BAGS": "Duffle Bag",
+          "DUFFLE TROLLEY": "Duffle Strolly", "GYM BAG": "Gym Bag", "RUCKSACK": "Trekking bag",
+          "TRAVEL SLING": "Travel Crossbody", "TOILETRY KIT": "Toiletry Kit Bag", "WALLETS": "Wallet",
+          "VANITY CASE AND POUCH": "pouch", "KIDS BAG": "Kids Bag", "MATERNITY BAG": "Maternity Bag",
+          "LAPTOP OVERNIGHTER": "Laptop Overnighter", "LAPTOP BACKPACK": "Laptop Backpack",
+          "EXECUTIVE BAGS": "Executive Bag", "BACKPACK WITH TROLLEY": "Backpack With Strolly",
+          "ROSHAN ELITE BACKPACK": "Elite Backpack"
+        };
+        const KGS_SUB_CATEGORIES = ["HARD", "SOFT", "KIDS LUGGAGE", "DUFFLE TROLLEY"];
+        const LITERS_SUB_CATEGORIES = [
+          "SCHOOL", "COLLEGE", "MESSENGER BAGS", "SCHOOL BAG WITH TROLLEY", "DUFFLE BAGS", 
+          "GYM BAG", "LAPTOP BACKPACK", "RUCKSACK", "KIDS BAG", "EXECUTIVE BAGS", 
+          "MATERNITY BAG", "BACKPACK WITH TROLLEY", "LAPTOP OVERNIGHTER", "ROSHAN ELITE BACKPACK"
+        ];
+
+        const roundPriceUp = (price) => Math.ceil(price / 500) * 500;
+
+        const incrementSku = (lastSku) => {
+          if (!lastSku) return "BAG1000"; 
+          const basePart = lastSku.split('-')[0];
+          const match = basePart.match(/^([a-zA-Z]+)(\d+)$/);
+          if (match) {
+            const prefix = match[1];
+            const number = parseInt(match[2], 10);
+            return `${prefix}${number + 1}`;
+          }
+          return basePart + "_NEXT";
+        };
+
+        const calculateVariantSKUs = (baseSku, variants, subCat1) => {
+          const skuMap = {};
+          const colors = Array.from(new Set(variants.map(v => v.color)));
+          const isMultiColor = colors.length > 1;
+          
+          if (subCat1 === "SET OF 3 COMBOS") {
+            let currentComboSku = baseSku;
+            variants.forEach((v, idx) => {
+              if (idx === 0) skuMap[v.id] = currentComboSku;
+              else {
+                currentComboSku = incrementSku(currentComboSku);
+                skuMap[v.id] = currentComboSku;
+              }
+            });
+            return skuMap;
+          }
+
+          let currentBaseSku = baseSku;
+          if (isMultiColor) {
+            colors.forEach((color, cIdx) => {
+              if (cIdx > 0) currentBaseSku = incrementSku(currentBaseSku);
+              const colorVariants = variants.filter(v => v.color === color);
+              colorVariants.forEach((v, vIdx) => {
+                if (vIdx === 0) skuMap[v.id] = currentBaseSku;
+                else skuMap[v.id] = `${currentBaseSku}-${vIdx}`;
+              });
+            });
+          } else {
+            variants.forEach((v, vIdx) => {
+              if (vIdx === 0) skuMap[v.id] = baseSku;
+              else skuMap[v.id] = `${baseSku}-${vIdx}`;
+            });
+          }
+          return skuMap;
+        };
+
+        const getSubCategory1List = (rules) => Array.from(new Set(rules.map(r => r.subCategory1))).sort();
+        const getSubCategory2List = (rules, selectedSubCat1) => {
+          const rule = rules.find(r => r.subCategory1 === selectedSubCat1);
+          return rule ? rule.subCategory2 : [];
+        };
+        const determineMainCategory = (rules, subCat1) => {
+          const rule = rules.find(r => r.subCategory1 === subCat1);
+          return rule ? rule.mainCategory : "";
+        };
+
+        const calculateVolume = (l, w, h, subCat1) => {
+          if (!l || !w || !h) return "";
+          if (KGS_SUB_CATEGORIES.includes(subCat1) || subCat1 === "SET OF 3 COMBOS") {
+            if (h <= 63) return "10 KGS"; 
+            if (h >= 64 && h <= 73) return "20 KGS";
+            if (h >= 74) return "30 KGS";
+            return "10 KGS"; 
+          } else if (LITERS_SUB_CATEGORIES.includes(subCat1)) {
+            return `${Math.round((l * w * h) / 1000)} L`; 
+          }
+          return `${Math.round((l * w * h) / 1000)} L`;
+        };
+
+        const generateKeywords = (master, variant, offerPrice) => {
+          const priceBelow = roundPriceUp(offerPrice);
+          const displaySubCat = SUB_CATEGORY_DISPLAY_MAP[master.subCategory1] || master.subCategory1;
+          let baseKeywords = "";
+          if (master.mainCategory.includes("SCHOOL") || master.subCategory1.includes("COLLEGE")) {
+            baseKeywords = "School Bag For Boy,School Bag For Girl,School Bag For Adult,Unisex School Bag,Colour Full Schoolbag,Water Resistant School Bag,Good Quality School Bag,College Bag,College Backpack,College Backpack For Men,College Backpack For Women,Unisex College Backpack,Spacious Backpack";
+          } else if (master.mainCategory.includes("LUGGAGE")) {
+            baseKeywords = "Lightweight Luggage,Durable Travel Luggage,Spinners And Wheeled Luggage,Cabin Size Luggage,Medium Size Luggage,Large Size Luggage,Checked Luggage,Carry-On Luggage,10 Kgs,20 Kgs,30 Kgs,Soft Luggage For Travel";
+          } else if (master.mainCategory.includes("PROFESSIONALS") || master.subCategory1.includes("LAPTOP")) {
+            baseKeywords = "Laptop bags,College Bag,College backpack For Men,College backpack For Women,Womens College Backpack,Travel bags,Soft sided travel bags";
+          } else {
+            baseKeywords = `${displaySubCat}, ${master.mainCategory} bag, Travel Bag, Casual Bag`;
+          }
+          return `${baseKeywords},${master.brandName} ${displaySubCat},${variant.color} Color, Below ${priceBelow}`;
+        };
+
+        const generateTitle = (master, variant, calculatedVolume) => {
+          const parts = [];
+          if (master.brandName) parts.push(master.brandName);
+          if (master.productName) parts.push(master.productName);
+          const mappedSubCat = SUB_CATEGORY_DISPLAY_MAP[master.subCategory1];
+          if (mappedSubCat) parts.push(mappedSubCat);
+          else if (master.subCategory1) parts.push(master.subCategory1);
+          
+          if (master.subCategory1 === "SET OF 3 COMBOS") parts.push("Set of 3 Pcs"); 
+          else if (KGS_SUB_CATEGORIES.includes(master.subCategory1)) {
+            if (variant.height) parts.push(`${variant.height} Cm`);
+          } else if (LITERS_SUB_CATEGORIES.includes(master.subCategory1)) {
+            if (calculatedVolume && calculatedVolume.includes("L")) parts.push(calculatedVolume);
+          }
+          if (variant.color) parts.push(variant.color);
+          return parts.filter(Boolean).join(" ");
+        };
+
+        const generateDescription = (master, variant, calculatedVolume) => {
+          const parts = [`Brand Name-${master.brandName}`];
+          if (master.productName) parts.push(`Model-${master.productName}`);
+          parts.push(`Material-${master.material}`);
+          parts.push(`Color-${variant.color}`);
+          if (master.subCategory1 === "SET OF 3 COMBOS" && variant.comboString) parts.push(variant.comboString);
+          const specs = parts.join(",");
+          const attr = master.descriptionAttributes;
+          const bullets = Object.values(attr).filter(val => val && val.trim() !== "").join("<Br>");
+          return { desc: specs, bullets };
+        };
+
+        const processVariant = (master, variant, index, calculatedSku) => {
+          const volume = calculateVolume(variant.length, variant.width, variant.height, master.subCategory1);
+          const generated = generateDescription(master, variant, volume);
+          const title = generateTitle(master, variant, volume);
+          const keywords = generateKeywords(master, variant, variant.offerPrice);
+          let weightClass = "";
+          if (variant.height < 59) weightClass = "Small";
+          else if (variant.height >= 64 && variant.height < 73) weightClass = "Medium";
+          else if (variant.height >= 74) weightClass = "Large";
+
+          return {
+            ...variant, volume, weightClass, sku: calculatedSku,
+            title, description: generated.desc, bulletPoints: generated.bullets, keywords
+          };
+        };
+
+        const generateProductRows = (products) => {
+          let allRows = [];
+          products.forEach(prod => {
+            const { master, variants } = prod;
+            const colors = Array.from(new Set(variants.map(v => v.color)));
+            const sizes = Array.from(new Set(variants.map(v => v.size)));
+            const isNoSize = sizes.length === 1 && sizes[0] === "No Size";
+            const isMultiColor = colors.length > 1;
+            const isCombo = master.subCategory1 === "SET OF 3 COMBOS";
+            
+            const variantsByColor = {};
+            colors.forEach(c => { variantsByColor[c] = variants.filter(v => v.color === c); });
+
+            Object.keys(variantsByColor).forEach(color => {
+              const colorGroup = variantsByColor[color];
+              colorGroup.forEach((row, index) => {
+                const isFirstInGroup = index === 0;
+                let variationType = "Parent only";
+                let variationTheme = "";
+                let parentSku = "";
+
+                if (isCombo) {
+                  variationTheme = "Color name";
+                  if (prod.variants.indexOf(row) === 0) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                  else { variationType = "Variant"; parentSku = prod.variants[0].sku; }
+                } else if (isNoSize) {
+                  if (isMultiColor) {
+                    variationTheme = "Color name";
+                    if (prod.variants.indexOf(row) === 0) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                    else { variationType = "Variant"; parentSku = prod.variants[0].sku; }
+                  }
+                } else {
+                  if (isMultiColor) {
+                     variationTheme = "Size name + color name";
+                     if (isFirstInGroup) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                     else { variationType = "Variant"; parentSku = colorGroup[0].sku; }
+                  } else {
+                     variationTheme = "Size name";
+                     if (isFirstInGroup) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                     else { variationType = "Variant"; parentSku = colorGroup[0].sku; }
+                  }
+                }
+                
+                let excelSizeName = row.size;
+                if (isNoSize || isCombo) excelSizeName = "";
+
+                allRows.push({
+                  SKU: row.sku, Material_category: master.mainCategory, Sub_category_level_1: master.subCategory1,
+                  Sub_category_level_2: master.subCategory2, HSN_code: master.hsnCode, Seller_SKU: "", 
+                  Brand_name: master.brandName, Product_ID: "", Item_name_title: row.title, Model_number: "", 
+                  Manufacturer: master.brandName, Product_description: row.description, Product_bullet_points: row.bulletPoints,
+                  Power_source_type: "", Included_components: "1", Manufacturer_contact_details: "",
+                  Item_type_name: "Unit", Number_of_packages: 1, Unit_count_per_product: 1, Unit_count_type: "Unit",
+                  Item_length: row.length, Item_length_unit_of_measure: "Cm", Item_width: row.width, Item_width_unit_of_measure: "Cm",
+                  Item_height: row.height, Item_height_unit_of_measure: "Cm", Country_of_origin: "India", Your_selling_price: row.offerPrice,
+                  Condition_type: "New", Currency: "INR", Maximum_retail_price: row.mrp, Sustainable_green_material_check: "",
+                  Manufacturer_warranty_description: master.warrantyType, Display_image_URL: "", Other_images_URL: "",
+                  Variation_theme: variationTheme, Variation_type: variationType, Parent_SKU: parentSku, Item_imported: "",
+                  Importer_contact: "", Manufacturer_part_number: "", Update_delete: "", Intended_product_use_with: "",
+                  Model_year: "", Search_keywords: row.keywords, Color_names: row.color, Pattern_name: "", Size_name: excelSizeName, 
+                  Primary_material_type: master.material, Finish_type: master.material, Plug_type: "", Special_features: "",
+                  Item_weight: "", Item_weight_unit_of_measure: "", Shipping_weight: "", Shipping_weight_unit_of_measure: "",
+                  Item_volume: row.volume, Item_volume_unit_of_measure: "", Are_batteries_included: "No", Is_the_product_a_battery_itself: "",
+                  Battery_type: "", Battery_weight: "", Battery_weight_unit_of_measure: "", Voltage: "", Safety_warning: "",
+                  Legal_disclaimer: "", Product_tax_code: master.taxType, Maximum_order_ship_quantity: "", Sale_price: 0,
+                  Sale_start_date: "", Sale_end_date: "", Fulfilment_latency: 1, Release_date: "", Stop_selling_date: "",
+                  Max_order_quantity: 1, Is_product_expirable: "No", Commission_percent: "", Return_and_refund: "",
+                  Warranty_term: master.warrantyType, Inventory_Qty: row.stockQty
+                });
+              });
+            });
+          });
+          return allRows.sort((a, b) => {
+             const nA = (a.SKU.match(/(\d+)/) || [0])[0];
+             const nB = (b.SKU.match(/(\d+)/) || [0])[0];
+             return parseInt(nA) - parseInt(nB);
+          });
+        };
+
+        const generateExcelForProducts = (products) => {
+          const exportData = generateProductRows(products);
+          const ws = XLSX.utils.json_to_sheet(exportData, { header: EXCEL_COLUMNS });
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, "Stock_Entry");
+          XLSX.writeFile(wb, `Stock_Export_${new Date().toISOString().slice(0,10)}.xlsx`);
+        };
+
+        const prepareDataForGoogleSheet = (products) => {
+          const data = generateProductRows(products);
+          return data.map(row => EXCEL_COLUMNS.map(col => row[col] === undefined || row[col] === null ? "" : row[col]));
+        };
+
+        // ==========================================
+        // 3. UI COMPONENTS
+        // ==========================================
+
+        const MultiSelectAttribute = ({ value, onChange, options }) => {
+          const [isOpen, setIsOpen] = useState(false);
+          const [search, setSearch] = useState("");
+          const dropdownRef = useRef(null);
+          const selectedItems = useMemo(() => value ? value.split(',').map(s => s.trim()).filter(Boolean) : [], [value]);
+
+          useEffect(() => {
+            const handleClickOutside = (event) => {
+              if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setIsOpen(false);
+            };
+            document.addEventListener("mousedown", handleClickOutside);
+            return () => document.removeEventListener("mousedown", handleClickOutside);
+          }, []);
+
+          const toggleItem = (item) => {
+            let newItems;
+            if (selectedItems.includes(item)) newItems = selectedItems.filter(i => i !== item);
+            else newItems = [...selectedItems, item];
+            onChange(newItems.join(', '));
+          };
+
+          const addCustom = () => {
+            if (search && !selectedItems.includes(search)) {
+              onChange([...selectedItems, search].join(', '));
+              setSearch("");
+            }
+          };
+
+          return (
+            <div className="w-full relative" ref={dropdownRef}>
+              <div className="flex flex-wrap gap-1.5 mb-2 min-h-[32px]">
+                {selectedItems.map((item, idx) => (
+                  <span key={idx} className="bg-blue-50 text-blue-700 text-[10px] px-2 py-1 rounded border border-blue-100 flex items-center gap-1">
+                    {item} <button onClick={() => toggleItem(item)} className="hover:text-red-500"><X size={12}/></button>
+                  </span>
+                ))}
+              </div>
+              <div className="relative">
+                <input value={search} onChange={(e) => { setSearch(e.target.value); setIsOpen(true); }} onFocus={() => setIsOpen(true)} className="w-full p-2 text-xs bg-white text-black border rounded focus:ring-2 ring-blue-100 outline-none" placeholder="Select features or type to add..." />
+                <ChevronDown size={14} className="absolute right-2 top-2.5 text-gray-400 pointer-events-none"/>
+              </div>
+              {isOpen && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-48 overflow-y-auto">
+                   {search && !options.some(o => o.toLowerCase() === search.toLowerCase()) && (
+                     <button onClick={addCustom} className="w-full text-left px-3 py-2 text-xs font-bold text-blue-600 hover:bg-blue-50 flex items-center gap-1"><Plus size={12}/> Add "{search}"</button>
+                   )}
+                   {options.filter(o => o.toLowerCase().includes(search.toLowerCase())).map((opt, i) => (
+                     <div key={i} onClick={() => toggleItem(opt)} className={`px-3 py-2 text-xs cursor-pointer hover:bg-gray-50 flex items-center justify-between ${selectedItems.includes(opt) ? 'bg-blue-50/50 text-blue-800 font-medium' : 'text-gray-700'}`}>
+                        <span>{opt}</span>{selectedItems.includes(opt) && <Check size={12}/>}
+                     </div>
+                   ))}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        const WarrantySelector = ({ value, onChange }) => {
+          const isInternational = value.toLowerCase().includes("international");
+          const baseValue = value.replace(/ international/i, "").replace(/ warranty/i, " warranty"); 
+          const selectedOption = WARRANTY_OPTIONS.find(opt => opt.toLowerCase() === baseValue.toLowerCase()) || "No warranty";
+          return (
+            <div className="flex items-center gap-2">
+              <select value={selectedOption} onChange={(e) => { const v = e.target.value; onChange(isInternational && v !== 'No warranty' ? v.replace("warranty", "International warranty") : v); }} className="flex-1 border border-gray-300 rounded-lg p-3 text-sm bg-white text-black focus:ring-2 ring-blue-500 outline-none">
+                {WARRANTY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              <label className={`flex items-center gap-1.5 cursor-pointer select-none px-2 py-1 rounded ${selectedOption === 'No warranty' ? 'opacity-50 pointer-events-none' : 'hover:bg-gray-50'}`}>
+                <input type="checkbox" checked={isInternational} onChange={(e) => onChange(e.target.checked ? selectedOption.replace("warranty", "International warranty") : selectedOption)} disabled={selectedOption === "No warranty"} className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500" />
+                <span className="text-xs font-bold text-gray-700">International</span>
+              </label>
+            </div>
+          );
+        };
+
+        const LocationEditModal = ({ item, currentLoc, onClose, onSave, isSaving }) => {
+          const [locString, setLocString] = useState(currentLoc === "Unassigned" ? "" : currentLoc);
+          return (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+               <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md animate-in fade-in zoom-in-95">
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">Edit Location</h3>
+                  <div className="mb-4 text-sm text-gray-500">Item: <span className="font-mono font-bold text-gray-800">{item.sku}</span></div>
+                  <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Rack / Shelf IDs</label>
+                  <input value={locString} onChange={e => setLocString(e.target.value)} className="w-full border border-gray-300 rounded-lg p-3 text-black mb-2 focus:border-blue-500 outline-none" placeholder="e.g. A3-1, B2-1" />
+                  <p className="text-[10px] text-gray-400 mb-6">Format: [Rack][Shelf]-[Qty]. Example: <b>A3-1, B2-2</b></p>
+                  <div className="flex justify-end gap-2">
+                     <button onClick={onClose} className="px-4 py-2 text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 font-medium text-sm">Cancel</button>
+                     <button onClick={() => onSave(locString)} disabled={isSaving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold text-sm flex items-center gap-2">
+                       {isSaving ? <RefreshCw size={14} className="animate-spin"/> : <Save size={14}/>} Update
+                     </button>
+                  </div>
+               </div>
+            </div>
+          );
+        };
+
+        const AisleConfigModal = ({ currentLayout, onClose, onSave }) => {
+           const [layout, setLayout] = useState(currentLayout);
+           const [newGroupText, setNewGroupText] = useState("");
+           const addGroup = () => { setLayout([...layout, { id: Date.now().toString(), name: newGroupText || `Row ${layout.length + 1}`, boxes: [] }]); setNewGroupText(""); };
+           const removeGroup = (idx) => setLayout(layout.filter((_, i) => i !== idx));
+           const moveGroup = (idx, dir) => {
+              if ((dir === 'up' && idx === 0) || (dir === 'down' && idx === layout.length - 1)) return;
+              const newL = [...layout]; const temp = newL[idx]; newL[idx] = newL[idx + (dir === 'up' ? -1 : 1)]; newL[idx + (dir === 'up' ? -1 : 1)] = temp; setLayout(newL);
+           };
+           const addBoxToGroup = (id) => setLayout(layout.map(g => g.id === id ? { ...g, boxes: [...g.boxes, `Box${Math.floor(Math.random()*1000)}`] } : g));
+           const updateBoxId = (gid, bidx, val) => setLayout(layout.map(g => g.id === gid ? { ...g, boxes: g.boxes.map((b, i) => i === bidx ? val : b) } : g));
+           const removeBox = (gid, bidx) => setLayout(layout.map(g => g.id === gid ? { ...g, boxes: g.boxes.filter((_, i) => i !== bidx) } : g));
+
+           return (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                 <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+                    <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl"><h3 className="font-bold text-lg">Configure Aisle Layout</h3><button onClick={onClose}><X size={20}/></button></div>
+                    <div className="p-4 flex-1 overflow-y-auto space-y-4 bg-slate-50">
+                       {layout.map((group, gIdx) => (
+                          <div key={group.id} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
+                             <div className="flex justify-between items-center mb-2 border-b pb-2">
+                                <div className="flex items-center gap-2 flex-1">
+                                  <div className="flex flex-col gap-0.5 mr-2"><button onClick={() => moveGroup(gIdx, 'up')} disabled={gIdx === 0}><ArrowUp size={12}/></button><button onClick={() => moveGroup(gIdx, 'down')} disabled={gIdx === layout.length-1}><ArrowDown size={12}/></button></div>
+                                  <input value={group.name} onChange={e => setLayout(layout.map((g, i) => i === gIdx ? { ...g, name: e.target.value } : g))} className="font-bold text-sm text-gray-800 outline-none w-full"/>
+                                </div>
+                                <div className="flex gap-2"><button onClick={() => addBoxToGroup(group.id)} className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded font-bold">+ Box</button><button onClick={() => removeGroup(gIdx)} className="text-gray-400 hover:text-red-500"><Trash2 size={14}/></button></div>
+                             </div>
+                             <div className="flex flex-wrap gap-2">
+                                {group.boxes.map((box, bIdx) => (<div key={bIdx} className="flex items-center bg-gray-50 border rounded px-2 py-1"><input value={box} onChange={e => updateBoxId(group.id, bIdx, e.target.value)} className="w-16 text-xs bg-transparent outline-none font-mono"/><button onClick={() => removeBox(group.id, bIdx)} className="ml-1 text-gray-400 hover:text-red-500"><X size={10}/></button></div>))}
+                             </div>
+                          </div>
+                       ))}
+                       <div className="flex gap-2"><input value={newGroupText} onChange={e => setNewGroupText(e.target.value)} placeholder="New Row Name..." className="flex-1 border rounded px-3 py-2 text-sm text-black"/><button onClick={addGroup} className="bg-slate-800 text-white px-4 rounded text-sm font-bold">Add Row</button></div>
+                    </div>
+                    <div className="p-4 border-t flex justify-end gap-2 bg-white"><button onClick={onClose} className="px-4 py-2 border rounded text-sm font-bold text-gray-600">Cancel</button><button onClick={() => onSave(layout)} className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-bold">Save Layout</button></div>
+                 </div>
+              </div>
+           )
+        };
+
+        const ShelfDetailModal = ({ context, items, allItems, searchQuery, isProcessing, onClose, onAddLocation, onRemoveLocation, onUpdateQty }) => {
+          const [search, setSearch] = useState("");
+          const [isAdding, setIsAdding] = useState(false);
+          const searchResults = useMemo(() => (!search || search.length < 2) ? [] : allItems.filter(i => String(i.sku).toLowerCase().includes(search.toLowerCase()) || String(i.name).toLowerCase().includes(search.toLowerCase())).slice(0, 10), [search, allItems]);
+          const displayTitle = context.type === 'Rack' ? `Rack ${context.rackId} - Shelf ${context.shelfId}` : `Box ${context.shelfId}`;
+          const displayLocId = context.type === 'Rack' ? `${context.rackId}${context.shelfId}` : context.shelfId;
+          const isTopShelf = context.type === 'Rack' && context.shelfId === '0';
+
+          const handleManualQtyChange = (item, newVal) => {
+            const val = parseInt(newVal);
+            let qtyNum = 1;
+            if (item.qtyAtLocation) {
+                const match = item.qtyAtLocation.match(/(\d+)/);
+                if (match) qtyNum = parseInt(match[0]);
+            }
+            if (!isNaN(val)) {
+                if (val === 0) { if (confirm(`Remove ${item.sku} from this location?`)) onRemoveLocation(item, displayLocId); }
+                else { const diff = val - qtyNum; if (diff !== 0) onUpdateQty(item, displayLocId, diff); }
+            }
+          };
+
+          return (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col relative overflow-hidden ring-1 ring-gray-900/5">
+                  {isProcessing && (<div className="absolute inset-0 bg-white/60 backdrop-blur-[2px] z-50 flex items-center justify-center rounded-2xl"><div className="bg-black/80 text-white px-5 py-3 rounded-full flex items-center gap-3 shadow-xl font-bold"><RefreshCw size={18} className="animate-spin text-blue-400"/> Saving...</div></div>)}
+                  <div className={`p-5 border-b ${isTopShelf ? 'bg-amber-50 border-amber-100' : 'bg-white border-gray-100'}`}>
+                     <div className="flex justify-between items-start mb-1">
+                       <div><p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">{context.type === 'Rack' ? 'Rack Location' : 'Aisle Location'}</p><h3 className="font-bold text-2xl text-gray-900 flex items-center gap-2">{context.type === 'Rack' ? <Layers size={24} className="text-blue-600"/> : <Box size={24} className="text-orange-600"/>} {displayLocId} {isTopShelf && <span className="bg-amber-100 text-amber-700 text-[10px] px-2 py-0.5 rounded-full border border-amber-200 uppercase font-bold tracking-wide align-middle">Top Storage</span>}</h3></div>
+                       <button onClick={onClose} className="bg-gray-100 p-2 rounded-full hover:bg-gray-200 transition-colors"><X size={18} className="text-gray-500"/></button>
+                     </div>
+                  </div>
+                  <div className="p-5 border-b border-gray-100 bg-gray-50/50">
+                     {!isAdding ? (<button onClick={() => setIsAdding(true)} className="w-full py-3 bg-white text-blue-600 rounded-xl border border-blue-200 shadow-sm text-sm font-bold hover:border-blue-400 hover:shadow-md transition-all flex items-center justify-center gap-2"><Plus size={18}/> Add Item to {displayLocId}</button>) : (
+                        <div className="relative animate-in fade-in zoom-in-95 duration-200"><div className="flex items-center gap-2 bg-white p-2 rounded-xl border border-blue-500 shadow-sm ring-4 ring-blue-50"><Search size={18} className="text-blue-500 ml-2"/><input autoFocus value={search} onChange={e => setSearch(e.target.value)} className="flex-1 text-sm outline-none bg-transparent placeholder-gray-400" placeholder="Scan or type SKU..."/><button onClick={() => { setIsAdding(false); setSearch(""); }} className="p-2 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-lg"><X size={16}/></button></div>
+                           {search && (<div className="absolute top-full left-0 right-0 bg-white border border-gray-200 shadow-xl rounded-xl max-h-56 overflow-y-auto mt-2 z-20">{searchResults.length === 0 ? <div className="p-4 text-xs text-center text-gray-400 font-medium">No items found</div> : searchResults.map(res => (<div key={res.sku} onClick={() => { onAddLocation(res, displayLocId); setSearch(""); setIsAdding(false); }} className="p-3 hover:bg-blue-50 cursor-pointer border-b border-gray-50 last:border-0 flex justify-between items-center group"><div><div className="font-bold text-sm text-gray-800 group-hover:text-blue-700">{res.sku}</div><div className="text-xs text-gray-500 truncate">{res.name}</div></div><Plus size={16} className="text-blue-400 opacity-0 group-hover:opacity-100"/></div>))}</div>)}
+                        </div>
+                     )}
+                  </div>
+                  <div className="flex-1 overflow-y-auto bg-white p-2">
+                     {items.length === 0 && (<div className="flex flex-col items-center justify-center h-48 text-gray-300"><Package size={48} className="mb-2 opacity-20"/><span className="text-sm font-medium">Empty Location</span></div>)}
+                     <div className="space-y-2">
+                     {items.map((item, idx) => {
+                       const isHighlighted = searchQuery && (String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(item.name).toLowerCase().includes(searchQuery.toLowerCase()));
+                       let qtyNum = 1; if (item.qtyAtLocation) { const match = item.qtyAtLocation.match(/(\d+)/); if (match) qtyNum = parseInt(match[0]); }
+                       return (
+                       <div key={idx} className={`flex items-center p-3 rounded-xl border transition-all ${isHighlighted ? 'bg-red-50 border-red-400 ring-2 ring-red-200' : 'bg-white border-gray-100 hover:border-gray-300 hover:shadow-sm'}`}>
+                          <div className="flex-1 min-w-0 mr-4"><div className="flex items-center gap-2 mb-0.5"><span className="font-mono font-bold text-sm text-gray-900 bg-gray-100 px-1.5 rounded">{item.sku}</span><span className="text-[10px] font-bold text-green-700 bg-green-50 px-1.5 rounded border border-green-100">₹{item.mrp}</span></div><div className="text-xs text-gray-500 truncate" title={item.name}>{item.name}</div></div>
+                          <div className="flex items-center gap-3">
+                             <div className="flex items-center bg-gray-50 rounded-lg border border-gray-200 h-10 shadow-sm overflow-hidden"><button onClick={() => onUpdateQty(item, displayLocId, -1)} className="w-10 h-full flex items-center justify-center hover:bg-gray-200 text-gray-600 border-r border-gray-200 transition-colors active:bg-gray-300"><Minus size={16}/></button><input type="number" value={qtyNum} onChange={(e) => handleManualQtyChange(item, e.target.value)} className="w-14 h-full text-center text-sm font-bold text-gray-800 bg-white focus:bg-blue-50 focus:outline-none"/><button onClick={() => onUpdateQty(item, displayLocId, 1)} className="w-10 h-full flex items-center justify-center hover:bg-blue-50 text-blue-600 border-l border-gray-200 transition-colors active:bg-blue-100"><Plus size={16}/></button></div>
+                             <button onClick={() => { if(confirm(`Remove ${item.sku}?`)) onRemoveLocation(item, displayLocId); }} className="text-gray-300 hover:text-red-500 hover:bg-red-50 p-2.5 rounded-lg transition-colors" title="Delete Item"><Trash2 size={18}/></button>
+                          </div>
+                       </div>
+                     )})}
+                     </div>
+                  </div>
+               </div>
+            </div>
+          );
+        };
+
+        const RackFrontViewModal = ({ rackId, shelfMap, onClose, onSelectShelf, searchQuery }) => {
+          return (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-300">
+                <div className="bg-slate-900 text-white p-4 flex justify-between items-center"><h3 className="font-bold text-lg flex items-center gap-2"><Layers size={20} className="text-blue-400"/> Rack {rackId}</h3><button onClick={onClose} className="hover:bg-white/10 p-1 rounded-full transition-colors"><X size={20}/></button></div>
+                <div className="p-6 bg-gray-100 flex flex-col gap-4 items-center">
+                   <div onClick={() => onSelectShelf('0')} className={`w-full h-24 border-2 border-dashed rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all relative group ${(shelfMap['0']?.length || 0) > 0 ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-gray-50 border-gray-300 text-gray-400 hover:border-blue-400 hover:bg-white'} ${searchQuery && shelfMap['0']?.some(i => String(i.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(i.name).toLowerCase().includes(searchQuery.toLowerCase())) ? 'animate-blink-red' : ''}`}><span className="font-bold text-sm uppercase tracking-widest">Shelf 0 (Top)</span><div className="text-xs font-medium mt-1">{shelfMap['0']?.length || 0} Items</div></div>
+                   <div className="w-full flex flex-col gap-1 border-x-4 border-gray-300 px-4 py-2 bg-gray-200 rounded-lg shadow-inner">
+                      {['1', '2', '3', '4'].map(shelfId => {
+                        const items = shelfMap[shelfId] || []; const count = items.length; 
+                        const hasMatch = searchQuery && items.some(i => String(i.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(i.name).toLowerCase().includes(searchQuery.toLowerCase()));
+                        return (<div key={shelfId} onClick={() => onSelectShelf(shelfId)} className={`h-16 w-full border border-gray-300 shadow-sm rounded-md flex items-center justify-between px-4 cursor-pointer transition-all transform hover:scale-[1.02] active:scale-95 ${count > 0 ? 'bg-white text-slate-800' : 'bg-slate-50 text-gray-400'} ${hasMatch ? 'animate-blink-red' : 'hover:border-blue-400'}`}><span className="font-bold">Shelf {shelfId}</span>{count > 0 ? (<span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-1 rounded-full">{count} Items</span>) : (<span className="text-[10px] uppercase tracking-wide">Empty</span>)}</div>)
+                      })}
+                   </div>
+                   <div className="text-[10px] text-gray-400 font-medium mt-2">Front View - Rack {rackId}</div>
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        const WarehouseVisualizer = ({ inventory, searchQuery, aisleLayout, onRackClick, onBoxClick, onConfigAisle }) => {
+          const shelfMap = useMemo(() => {
+            const map = {}; inventory.forEach(rack => { const rackId = rack.id.replace("Rack ", "").trim(); if (!map[rackId]) map[rackId] = {}; rack.subLocations.forEach(shelf => { const shelfId = shelf.id.replace("Shelf ", "").trim(); map[rackId][shelfId] = shelf.items; }); }); return map;
+          }, [inventory]);
+          
+          const renderRackBlock = (rackId) => {
+            let totalItems = 0; let hasMatch = false; 
+            if (shelfMap[rackId]) Object.values(shelfMap[rackId]).forEach(items => { 
+                totalItems += items.length; 
+                if (searchQuery && items.some(i => String(i.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(i.name).toLowerCase().includes(searchQuery.toLowerCase()))) hasMatch = true; 
+            });
+            return (<div onClick={() => onRackClick(rackId)} className={`w-20 h-28 rounded-xl border-2 transition-all cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm hover:shadow-md hover:-translate-y-1 relative group ${totalItems > 0 ? 'bg-white border-slate-300' : 'bg-slate-50 border-slate-200 border-dashed'} ${hasMatch ? 'animate-blink-red' : ''}`}><span className="text-xl font-black text-slate-700">{rackId}</span>{totalItems > 0 && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold">{totalItems} Items</span>}<div className="absolute inset-x-2 bottom-2 h-1 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-blue-500" style={{ width: `${Math.min((totalItems / 50) * 100, 100)}%` }}></div></div></div>);
+          };
+          
+          const renderAisleRow = (group) => (
+             <div key={group.id} className="flex gap-4 justify-center mb-6 last:mb-0">
+                {group.boxes.map(boxId => {
+                   let items = []; const normalizedBoxId = boxId; if (shelfMap["General"]) { const keys = Object.keys(shelfMap["General"]); const matchKey = keys.find(k => k.toLowerCase() === normalizedBoxId.toLowerCase()); if (matchKey) items = shelfMap["General"][matchKey]; }
+                   const count = items.length; 
+                   const hasMatch = searchQuery && items.some(item => String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(item.name).toLowerCase().includes(searchQuery.toLowerCase()));
+                   return (<div key={boxId} onClick={() => onBoxClick(boxId, items)} className={`w-16 h-12 rounded-lg border-2 flex items-center justify-center text-xs font-bold shadow-sm cursor-pointer transition-all hover:scale-105 ${count > 0 ? 'bg-orange-50 border-orange-200 text-orange-800' : 'bg-white border-dashed border-gray-300 text-gray-400'} ${hasMatch ? 'animate-blink-red' : ''}`}>{boxId}</div>)
+                })}
+             </div>
+          );
+          return (
+            <div className="flex flex-col h-full bg-slate-100 rounded-xl border border-slate-200 overflow-hidden relative">
+               <div className="flex-1 overflow-auto p-8 flex justify-center"><div className="flex gap-16 min-w-max"><div className="flex flex-col gap-4"><div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Left Wing</div>{RACKS_LEFT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}</div><div className="flex flex-col items-center px-8 border-x-2 border-dashed border-slate-200 bg-slate-50/50 rounded-3xl"><div className="flex items-center gap-2 mb-8 mt-4"><span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Central Aisle</span><button onClick={onConfigAisle} className="p-1 hover:bg-slate-200 rounded text-gray-400"><Settings2 size={14}/></button></div><div className="flex flex-col justify-center gap-8">{aisleLayout.map(group => renderAisleRow(group))}</div></div><div className="flex flex-col gap-4"><div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Right Wing</div>{RACKS_RIGHT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}</div></div></div>
+               <div className="absolute bottom-6 right-8 pointer-events-none"><div className="flex flex-col items-end gap-1 opacity-50"><div className="h-16 w-1 bg-slate-900 rounded-full"></div><div className="text-xs font-bold uppercase tracking-widest text-slate-900">Entrance</div></div></div>
+            </div>
+          );
+        };
+
+        const StockViewPage = ({ settings }) => {
+          const [isLoading, setIsLoading] = useState(false);
+          const [stockData, setStockData] = useState([]);
+          const [searchQuery, setSearchQuery] = useState("");
+          const [selectedRack, setSelectedRack] = useState(null);
+          const [expandedShelves, setExpandedShelves] = useState([]);
+          const [viewMode, setViewMode] = useState('graphic');
+          const [aisleLayout, setAisleLayout] = useState(() => { const saved = localStorage.getItem('aisleLayout'); return saved ? JSON.parse(saved) : DEFAULT_AISLE_LAYOUT; });
+          const [shelfModal, setShelfModal] = useState({ show: false, context: null });
+          const [editingItem, setEditingItem] = useState(null);
+          const [isSavingLoc, setIsSavingLoc] = useState(false);
+          const [showAisleConfig, setShowAisleConfig] = useState(false);
+          const [selectedRackForVisual, setSelectedRackForVisual] = useState(null);
+
+          useEffect(() => { localStorage.setItem('aisleLayout', JSON.stringify(aisleLayout)); }, [aisleLayout]);
+
+          const fetchStock = async () => {
+            if (!settings.googleScriptUrl) return;
+            setIsLoading(true);
+            try {
+              const response = await fetchWithRetry(`${settings.googleScriptUrl}?action=GET_STOCK_DATA`);
+              const json = await response.json();
+              if (json.status === 'success') setStockData(json.data);
+            } catch (e) { console.error("Stock fetch failed", e); alert("Could not load stock data. Check internet/script."); } finally { setIsLoading(false); }
+          };
+          useEffect(() => { fetchStock(); }, []);
+
+          const inventory = useMemo(() => {
+            const locationMap = {}; [...RACKS_LEFT, ...RACKS_RIGHT].forEach(r => { locationMap[r] = {}; });
+            if (!locationMap["General"]) locationMap["General"] = {};
+            aisleLayout.forEach(group => { group.boxes.forEach(box => { if (!locationMap["General"][box]) locationMap["General"][box] = []; }); });
+
+            stockData.forEach(item => {
+              const rawLocs = String(item.location || "Unassigned").split(',').map(s => s.trim()).filter(Boolean);
+              if (rawLocs.length === 0) rawLocs.push("Unassigned");
+              rawLocs.forEach(loc => {
+                  let rack = "General", shelf = "Main", qty = "";
+                  const cleanLoc = loc.toUpperCase().replace(/\s+/g, ''), cleanLocRaw = loc.trim(); 
+                  if (cleanLoc.startsWith("BOX")) {
+                     rack = "General"; const parts = cleanLocRaw.split('-'); let boxIdRaw = parts[0].trim();
+                     if(boxIdRaw.toUpperCase().startsWith("BOX")) boxIdRaw = "Box" + boxIdRaw.substring(3);
+                     shelf = boxIdRaw; if (parts.length > 1) { const possibleQty = parseInt(parts[1]); if (!isNaN(possibleQty)) qty = possibleQty.toString(); }
+                  } else {
+                    const strictMatch = cleanLoc.match(/^([A-Z]+)(\d+)-(\d+)$/); const simpleMatch = cleanLoc.match(/^([A-Z]+)(\d+)$/);
+                    if (strictMatch) { rack = strictMatch[1]; shelf = strictMatch[2]; qty = strictMatch[3]; } else if (simpleMatch) { rack = simpleMatch[1]; shelf = simpleMatch[2]; } else if (cleanLoc.includes('-')) { const parts = cleanLoc.split('-'); const possibleQty = parseInt(parts[parts.length-1]); if (!isNaN(possibleQty) && possibleQty < 1000) { qty = possibleQty.toString(); parts.pop(); } rack = parts[0].trim(); shelf = parts.slice(1).join('-').trim() || "Main"; } else { rack = cleanLoc; }
+                  }
+                  if (!locationMap[rack]) locationMap[rack] = {}; if (!locationMap[rack][shelf]) locationMap[rack][shelf] = [];
+                  locationMap[rack][shelf].push({ ...item, qtyAtLocation: qty ? `${qty} Pcs` : undefined });
+              });
+            });
+            return Object.entries(locationMap).map(([rackName, shelvesObj]) => ({ id: rackName, subLocations: Object.entries(shelvesObj).map(([shelfName, items]) => ({ id: shelfName, items: items })) })).sort((a, b) => a.id.localeCompare(b.id));
+          }, [stockData, aisleLayout]);
+
+          const filteredInventory = useMemo(() => {
+            if (!searchQuery) return inventory;
+            const lowerQ = searchQuery.toLowerCase();
+            return inventory.map(rack => {
+              const rackMatches = rack.id.toLowerCase().includes(lowerQ);
+              const filteredShelves = rack.subLocations.map(shelf => {
+                const shelfMatches = shelf.id.toLowerCase().includes(lowerQ);
+                const matchingItems = shelf.items.filter(item => String(item.sku).toLowerCase().includes(lowerQ) || String(item.name).toLowerCase().includes(lowerQ));
+                if (rackMatches || shelfMatches || matchingItems.length > 0) return { ...shelf, items: matchingItems.length > 0 ? matchingItems : shelf.items };
+                return null;
+              }).filter(Boolean);
+              if (filteredShelves.length > 0) return { ...rack, subLocations: filteredShelves };
+              return null;
+            }).filter(Boolean);
+          }, [inventory, searchQuery]);
+
+          const modalItems = useMemo(() => {
+            if (!shelfModal.context) return []; const ctx = shelfModal.context;
+            if (ctx.type === 'Rack') { const rack = inventory.find(r => r.id === ctx.rackId); if (rack) { const shelf = rack.subLocations.find(s => s.id === ctx.shelfId); if (shelf) return shelf.items; } return []; }
+            else if (ctx.type === 'Box') { let items = []; const rack = inventory.find(r => r.id === "General"); if (rack) { const target = ctx.shelfId.toLowerCase(); const shelf = rack.subLocations.find(s => s.id.toLowerCase() === target); if (shelf) items = shelf.items; } return items; }
+            return [];
+          }, [inventory, shelfModal.context]);
+
+          const handleUpdateStockLocation = async (sku, newLocationString) => {
+             if (!settings.googleScriptUrl) return; setIsSavingLoc(true);
+             try {
+               const response = await fetchWithRetry(settings.googleScriptUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'UPDATE_STOCK_LOCATION', data: { sku, location: newLocationString } }) });
+               const json = await response.json();
+               if (json.status === 'error') { alert(`Error updating location: ${json.message}`); throw new Error(json.message); }
+               setStockData(prev => prev.map(i => i.sku === sku ? { ...i, location: newLocationString } : i)); return true;
+             } catch (e) { if (!(e instanceof Error) || !e.message.includes("Error updating location")) alert(`Failed to update location.`); return false; } finally { setIsSavingLoc(false); }
+          };
+
+          const handleAddItemToLocation = async (item, locId) => {
+             const targetLocBase = locId; const targetLoc = `${targetLocBase}-1`; const currentLocs = item.location === "Unassigned" ? [] : item.location.split(',').map(s => s.trim());
+             const existingIndex = currentLocs.findIndex(l => { const cleanL = l.toUpperCase(); const cleanTarget = targetLocBase.toUpperCase(); return cleanL === cleanTarget || cleanL.startsWith(cleanTarget + '-'); });
+             if (existingIndex >= 0) { if(confirm(`Item ${item.sku} is already in ${locId}. Add +1 to quantity?`)) handleUpdateQty(item, locId, 1); return; }
+             await handleUpdateStockLocation(item.sku, [...currentLocs, targetLoc].join(', '));
+          };
+
+          const handleRemoveItemFromLocation = async (item, locIdToRemove) => {
+             const currentLocs = item.location === "Unassigned" ? [] : item.location.split(',').map(s => s.trim());
+             const newLocs = currentLocs.filter(l => { const cleanL = l.toUpperCase(); const cleanTarget = locIdToRemove.toUpperCase(); if (cleanL === cleanTarget) return false; if (cleanL.startsWith(cleanTarget + '-')) return false; return true; });
+             await handleUpdateStockLocation(item.sku, newLocs.length > 0 ? newLocs.join(', ') : "Unassigned");
+          };
+
+          const handleUpdateQty = async (item, locId, delta) => {
+            const currentLocs = item.location.split(',').map(s => s.trim());
+            const idx = currentLocs.findIndex(l => { const cleanL = l.toUpperCase(); const cleanTarget = locId.toUpperCase(); return cleanL === cleanTarget || cleanL.startsWith(cleanTarget + '-'); });
+            if (idx === -1) { if (delta > 0) await handleUpdateStockLocation(item.sku, [...currentLocs, `${locId}-${delta}`].join(', ')); return; }
+            let currentQty = 1; const segment = currentLocs[idx]; const match = segment.match(/-(\d+)$/); if (match) currentQty = parseInt(match[1]); else if (segment.toUpperCase() === locId.toUpperCase()) currentQty = 1;
+            const newQty = currentQty + delta;
+            if (newQty <= 0) { if (confirm(`Quantity is ${newQty}. Remove item from this location?`)) handleRemoveItemFromLocation(item, locId); return; }
+            currentLocs[idx] = `${locId}-${newQty}`; await handleUpdateStockLocation(item.sku, currentLocs.join(', '));
+          };
+
+          const getRackShelfMap = (rackId) => { const map = {}; const rack = inventory.find(r => r.id === rackId); if (rack) rack.subLocations.forEach(sub => map[sub.id] = sub.items); return map; };
+
+          return (
+            <div className="space-y-6 animate-in fade-in duration-500 h-[calc(100vh-100px)] flex flex-col">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200"><div><h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><MapPin className="text-orange-600"/> Visual Stock Map</h2><p className="text-sm text-gray-500">Locate inventory across Racks, Shelves, and Boxes.</p></div><div className="flex gap-3 w-full md:w-auto"><div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200"><button onClick={() => setViewMode('list')} className={`p-2 rounded-md flex items-center gap-2 text-xs font-bold transition-all ${viewMode === 'list' ? 'bg-white shadow text-black' : 'text-gray-500 hover:text-gray-700'}`}><List size={16}/> LIST</button><button onClick={() => setViewMode('graphic')} className={`p-2 rounded-md flex items-center gap-2 text-xs font-bold transition-all ${viewMode === 'graphic' ? 'bg-white shadow text-black' : 'text-gray-500 hover:text-gray-700'}`}><LayoutGrid size={16}/> MAP</button></div><div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-3 text-gray-400" size={18}/><input value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setSelectedRack(null); setExpandedShelves([]); }} className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 ring-orange-500 outline-none transition-all text-black" placeholder="Find SKU..." /></div><button onClick={fetchStock} className="p-2.5 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-600 transition-colors"><RefreshCw size={20} className={isLoading ? "animate-spin" : ""}/></button></div></div>
+              {viewMode === 'graphic' ? (<WarehouseVisualizer inventory={inventory} searchQuery={searchQuery} aisleLayout={aisleLayout} onRackClick={(rackId) => setSelectedRackForVisual(rackId)} onBoxClick={(boxId, items) => setShelfModal({ show: true, context: { type: 'Box', rackId: 'Aisle', shelfId: boxId, fullId: boxId }})} onConfigAisle={() => setShowAisleConfig(true)} />) : (
+                <div className="flex-1 bg-gray-50 rounded-xl border border-gray-200 overflow-hidden flex"><div className={`w-full md:w-1/3 lg:w-1/4 bg-white border-r border-gray-200 overflow-y-auto p-4 space-y-3 ${selectedRack && 'hidden md:block'}`}><h3 className="text-xs font-bold uppercase text-gray-400 mb-2">Warehouse Locations</h3>{filteredInventory.length === 0 && !isLoading && <div className="text-center text-gray-400 py-10">No locations found</div>}{filteredInventory.map(rack => (<div key={rack.id} onClick={() => setSelectedRack(rack.id)} className={`p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md flex justify-between items-center group ${selectedRack === rack.id ? 'bg-orange-50 border-orange-300 shadow-sm' : 'bg-white border-gray-200 hover:border-gray-300'}`}><div><div className="flex items-center gap-2"><Archive size={18} className={selectedRack === rack.id ? 'text-orange-600' : 'text-gray-400'}/><span className={`font-bold text-sm ${selectedRack === rack.id ? 'text-orange-900' : 'text-gray-700'}`}>{rack.id}</span></div><div className="text-xs text-gray-400 mt-1 ml-6">{rack.subLocations.length} Locations • {rack.subLocations.reduce((acc, s) => acc + s.items.length, 0)} Items</div></div><ChevronRight size={16} className={`text-gray-300 transition-transform ${selectedRack === rack.id ? 'rotate-90 text-orange-400' : 'group-hover:text-gray-500'}`}/></div>))}</div>
+                <div className={`flex-1 overflow-y-auto bg-slate-50 p-4 md:p-8 ${!selectedRack && 'hidden md:flex md:items-center md:justify-center'}`}>{!selectedRack ? ( <div className="text-center text-gray-400"><Package size={48} className="mx-auto mb-4 opacity-20"/><p>Select a Rack to view contents</p></div> ) : (<div className="space-y-6 animate-in slide-in-from-right-4 duration-300"><div className="flex items-center gap-2 md:hidden mb-4"><button onClick={() => setSelectedRack(null)} className="text-gray-600"><ArrowRight className="rotate-180"/></button><span className="font-bold text-lg">{selectedRack}</span></div>{filteredInventory.find(r => r.id === selectedRack)?.subLocations.map(shelf => { const isExpanded = searchQuery ? true : expandedShelves.includes(shelf.id); return (<div key={shelf.id} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden"><div onClick={() => setExpandedShelves(prev => prev.includes(shelf.id) ? prev.filter(p => p !== shelf.id) : [...prev, shelf.id])} className="px-6 py-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center cursor-pointer hover:bg-gray-100 transition-colors"><h4 className="font-bold text-sm text-gray-800 flex items-center gap-2"><Layers size={16} className="text-blue-500"/> {shelf.id}</h4><div className="flex items-center gap-3"><span className="text-xs bg-white border px-2 py-0.5 rounded text-gray-500">{shelf.items.length} Items</span><ChevronDown size={16} className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}/></div></div>{isExpanded && (<div className="divide-y divide-gray-100 animate-in slide-in-from-top-2 duration-200">{shelf.items.length === 0 ? ( <div className="p-4 text-xs text-gray-400 italic">Empty Location</div> ) : (shelf.items.map((item, idx) => (<div key={idx} className={`p-4 hover:bg-blue-50/30 transition-colors flex items-center justify-between ${searchQuery && (String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(item.name).toLowerCase().includes(searchQuery.toLowerCase())) ? 'bg-red-50 border-l-4 border-red-500' : ''}`}><div><div className="flex items-center gap-2 mb-1"><span className="font-mono font-bold text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded">{item.sku}</span><span className="text-[10px] text-gray-400 border px-1 rounded">MRP {item.mrp}</span></div><div className="text-sm font-medium text-gray-800">{item.name}</div></div><div className="flex items-center gap-2">{item.qtyAtLocation && (<span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded">{item.qtyAtLocation}</span>)}<div className="hidden md:block"><span className="text-xs font-bold text-gray-400 bg-gray-100 px-2 py-1 rounded">{selectedRack}-{shelf.id}</span></div><button onClick={(e) => { e.stopPropagation(); setEditingItem(item); }} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16}/></button></div></div>)))}</div>)}</div>)})}</div>)}</div></div>
+              )}
+              {editingItem && <LocationEditModal item={editingItem} currentLoc={editingItem.location} onClose={() => setEditingItem(null)} onSave={(newLoc) => { handleUpdateStockLocation(editingItem.sku, newLoc); setEditingItem(null); }} isSaving={isSavingLoc} />}
+              {selectedRackForVisual && <RackFrontViewModal rackId={selectedRackForVisual} shelfMap={getRackShelfMap(selectedRackForVisual)} onClose={() => setSelectedRackForVisual(null)} onSelectShelf={(shelfId) => setShelfModal({ show: true, context: { type: 'Rack', rackId: selectedRackForVisual, shelfId, fullId: `${selectedRackForVisual}${shelfId}` } })} searchQuery={searchQuery} />}
+              {shelfModal.show && shelfModal.context && <ShelfDetailModal context={shelfModal.context} items={modalItems} allItems={stockData} searchQuery={searchQuery} isProcessing={isSavingLoc} onClose={() => setShelfModal({...shelfModal, show: false})} onAddLocation={handleAddItemToLocation} onRemoveLocation={handleRemoveItemFromLocation} onUpdateQty={handleUpdateQty} />}
+              {showAisleConfig && <AisleConfigModal currentLayout={aisleLayout} onClose={() => setShowAisleConfig(false)} onSave={(newLayout) => { setAisleLayout(newLayout); setShowAisleConfig(false); }} />}
+            </div>
+          );
+        };
+
+        const Sidebar = ({ activePage, setActivePage, isOpen, setIsOpen, onSync, isSyncing }) => {
+          const menuItems = [{ id: 'entry', label: 'New Stock Entry', icon: LayoutDashboard }, { id: 'products', label: 'Product Library', icon: ShoppingBag }, { id: 'stock', label: 'Stock View', icon: Package }, { id: 'settings', label: 'Configuration', icon: Settings }];
+          return (
+            <div className={`fixed inset-y-0 left-0 bg-slate-900 text-white w-64 transform ${isOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 transition-transform duration-200 ease-in-out z-50 flex flex-col shadow-2xl border-r border-slate-800`}>
+              <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-950"><h1 className="text-xl font-bold tracking-wider flex items-center gap-2"><div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-black">S</div>STOCK<span className="text-blue-500">PRO</span></h1><button className="md:hidden text-slate-400 hover:text-white" onClick={() => setIsOpen(false)}><X size={24}/></button></div>
+              <nav className="flex-1 p-4 space-y-2 overflow-y-auto">{menuItems.map(item => (<button key={item.id} onClick={() => { setActivePage(item.id); setIsOpen(false); }} className={`flex items-center gap-3 w-full px-4 py-3.5 rounded-xl text-sm font-medium transition-all duration-200 ${activePage === item.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50 translate-x-1' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}><item.icon size={20} className={activePage === item.id ? 'text-white' : 'text-slate-500'} />{item.label}</button>))}</nav>
+              <div className="p-4 border-t border-slate-800 bg-slate-900"><button onClick={onSync} disabled={isSyncing} className={`flex items-center justify-center gap-2 w-full px-4 py-3 rounded-xl text-sm font-bold text-white bg-slate-800 hover:bg-emerald-600 transition-colors ${isSyncing ? 'opacity-50 cursor-not-allowed' : ''}`}><RefreshCw size={18} className={isSyncing ? "animate-spin" : ""} />{isSyncing ? "Syncing..." : "Sync Data"}</button></div>
+            </div>
+          );
+        };
+
+        const SettingsPage = ({ settings, setSettings, onSaveConfig, isSyncing }) => {
+          const [newBrand, setNewBrand] = useState(""); const [newMaterial, setNewMaterial] = useState(""); const [ruleMain, setRuleMain] = useState(""); const [ruleSub1, setRuleSub1] = useState(""); const [ruleSub2, setRuleSub2] = useState("");
+          const addBrand = () => { if(newBrand) { setSettings(s => ({...s, brands: [...s.brands, newBrand]})); setNewBrand(""); }};
+          const addMaterial = () => { if(newMaterial) { setSettings(s => ({...s, materials: [...s.materials, newMaterial]})); setNewMaterial(""); }};
+          const addCategoryRule = () => { if (!ruleMain || !ruleSub1) return; const sub2Array = ruleSub2 ? ruleSub2.split(',').map(s => s.trim()).filter(Boolean) : []; setSettings(prev => { const existingIndex = prev.categoryRules.findIndex(r => r.subCategory1.toLowerCase() === ruleSub1.toLowerCase()); let newRules = [...prev.categoryRules]; if (existingIndex >= 0) { const existing = newRules[existingIndex]; const combinedSub2 = Array.from(new Set([...existing.subCategory2, ...sub2Array])); newRules[existingIndex] = { ...existing, mainCategory: ruleMain, subCategory2: combinedSub2 }; } else { newRules.push({ mainCategory: ruleMain, subCategory1: ruleSub1, subCategory2: sub2Array }); } return { ...prev, categoryRules: newRules }; }); setRuleSub1(""); setRuleSub2(""); };
+
+          return (
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"><div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4"><div className="flex items-center gap-3"><Settings className="text-blue-600" size={28}/><div><h2 className="text-2xl font-bold text-gray-900">Configuration</h2><p className="text-sm text-gray-500">Manage system dropdowns and category mappings.</p></div></div><button onClick={onSaveConfig} disabled={isSyncing} className="flex items-center gap-2 bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-sm transition-all"><UploadCloud size={18} className={isSyncing ? "animate-spin" : ""}/> {isSyncing ? "Merging & Saving..." : "Save Config to Cloud"}</button></div></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"><h3 className="font-bold mb-4 uppercase text-xs tracking-wider text-gray-500 flex items-center gap-2"><Tag size={16}/> Brands Management</h3><div className="flex gap-2 mb-4"><input value={newBrand} onChange={e => setNewBrand(e.target.value)} className="border border-gray-300 bg-white text-black p-3 rounded-lg w-full text-sm placeholder-gray-400 focus:ring-2 ring-blue-500 outline-none transition-all" placeholder="Enter Brand Name" /><button onClick={addBrand} className="bg-slate-900 text-white px-5 rounded-lg font-bold hover:bg-slate-800 shadow-md transition-all active:scale-95">+</button></div><div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto p-1">{settings.brands.map(b => <span key={b} className="bg-white border border-gray-200 text-gray-800 px-3 py-1.5 rounded-md text-sm font-medium shadow-sm hover:border-gray-400 transition-colors">{b}</span>)}</div></div>
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"><h3 className="font-bold mb-4 uppercase text-xs tracking-wider text-gray-500 flex items-center gap-2"><Box size={16}/> Materials Management</h3><div className="flex gap-2 mb-4"><input value={newMaterial} onChange={e => setNewMaterial(e.target.value)} className="border border-gray-300 bg-white text-black p-3 rounded-lg w-full text-sm placeholder-gray-400 focus:ring-2 ring-blue-500 outline-none transition-all" placeholder="Enter Material Name" /><button onClick={addMaterial} className="bg-slate-900 text-white px-5 rounded-lg font-bold hover:bg-slate-800 shadow-md transition-all active:scale-95">+</button></div><div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto p-1">{settings.materials.map(b => <span key={b} className="bg-white border border-gray-200 text-gray-800 px-3 py-1.5 rounded-md text-sm font-medium shadow-sm hover:border-gray-400 transition-colors">{b}</span>)}</div></div>
+              </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"><h3 className="font-bold mb-6 uppercase text-xs tracking-wider text-gray-500 flex items-center gap-2"><Layers size={16}/> Category Mapping Rules</h3><div className="bg-slate-50 p-5 rounded-xl border border-slate-200 mb-8"><div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end"><div className="md:col-span-3"><label className="block text-xs font-bold mb-1.5 text-gray-600">Main Category</label><input value={ruleMain} onChange={e => setRuleMain(e.target.value)} className="w-full border border-gray-300 bg-white text-black p-2.5 rounded-lg text-sm focus:ring-2 ring-blue-500 outline-none" placeholder="e.g. LUGGAGE"/></div><div className="md:col-span-3"><label className="block text-xs font-bold mb-1.5 text-gray-600">Sub Category 1</label><input value={ruleSub1} onChange={e => setRuleSub1(e.target.value)} className="w-full border border-gray-300 bg-white text-black p-2.5 rounded-lg text-sm focus:ring-2 ring-blue-500 outline-none" placeholder="e.g. HARD"/></div><div className="md:col-span-4"><label className="block text-xs font-bold mb-1.5 text-gray-600">Sub Category 2</label><input value={ruleSub2} onChange={e => setRuleSub2(e.target.value)} className="w-full border border-gray-300 bg-white text-black p-2.5 rounded-lg text-sm focus:ring-2 ring-blue-500 outline-none" placeholder="e.g. Cabin, Check-in"/></div><div className="md:col-span-2"><button onClick={addCategoryRule} className="w-full bg-blue-600 text-white p-2.5 rounded-lg font-bold text-sm hover:bg-blue-700 shadow-lg transition-all active:scale-95">Save Rule</button></div></div></div><div className="overflow-hidden rounded-xl border border-gray-200"><table className="w-full text-sm text-left"><thead className="bg-gray-50 text-gray-900 uppercase font-bold text-xs"><tr><th className="px-5 py-3 border-r border-gray-200 w-1/4">Sub Category 1</th><th className="px-5 py-3 border-r border-gray-200 w-1/4">Main Category</th><th className="px-5 py-3">Allowed Sub Category 2s</th></tr></thead><tbody className="divide-y divide-gray-200 bg-white">{settings.categoryRules.map((rule, idx) => (<tr key={idx} className="hover:bg-blue-50/50 transition-colors"><td className="px-5 py-3 font-semibold text-gray-900 border-r border-gray-100">{rule.subCategory1}</td><td className="px-5 py-3 text-gray-600 border-r border-gray-100">{rule.mainCategory}</td><td className="px-5 py-3 text-gray-500">{rule.subCategory2.length > 0 ? (<div className="flex flex-wrap gap-1">{rule.subCategory2.map((s, i) => <span key={i} className="inline-block bg-gray-100 text-gray-600 text-[10px] px-1.5 py-0.5 rounded border border-gray-200">{s}</span>)}</div>) : <span className="opacity-30 italic">None</span>}</td></tr>))}</tbody></table></div></div>
+            </div>
+          );
+        };
+
+        const ProductDetailModal = ({ product, onClose, onDelete, onSave, appSettings }) => {
+          const [data, setData] = useState(product); const [visibleFeatures, setVisibleFeatures] = useState([]);
+          useEffect(() => { const keysWithData = Object.entries(product.master.descriptionAttributes).filter(([k, v]) => v && v.trim() !== '').map(([k]) => k); setVisibleFeatures(Array.from(new Set(['compartment', ...keysWithData]))); }, []);
+          const handleMasterChange = (field, value) => setData(prev => ({ ...prev, master: { ...prev.master, [field]: value } }));
+          const handleDescAttributeChange = (field, value) => setData(prev => ({ ...prev, master: { ...prev.master, descriptionAttributes: { ...prev.master.descriptionAttributes, [field]: value } } }));
+          const addFeatureRow = () => { const available = Object.keys(DESCRIPTION_DEFAULTS).filter(k => !visibleFeatures.includes(k)); if (available.length > 0) setVisibleFeatures([...visibleFeatures, available[0]]); };
+          const removeFeatureRow = (key) => { setVisibleFeatures(visibleFeatures.filter(k => k !== key)); handleDescAttributeChange(key, ""); };
+          const changeRowKey = (oldKey, newKey) => { if (!visibleFeatures.includes(newKey)) setVisibleFeatures(visibleFeatures.map(k => k === oldKey ? newKey : k)); };
+          const handleVariantChange = (index, field, value) => { const newVariants = [...data.variants]; const updatedVariant = { ...newVariants[index], [field]: value }; if (field === 'mrp') updatedVariant.offerPrice = Math.round(updatedVariant.mrp * (1 - updatedVariant.discountPercent / 100)); else if (field === 'discountPercent') updatedVariant.offerPrice = Math.round(updatedVariant.mrp * (1 - value / 100)); else if (field === 'offerPrice' && updatedVariant.mrp > 0) updatedVariant.discountPercent = Math.round(((updatedVariant.mrp - value) / updatedVariant.mrp) * 100 * 100) / 100; newVariants[index] = updatedVariant; setData(prev => ({ ...prev, variants: newVariants })); };
+          useEffect(() => { const recalculatedVariants = data.variants.map((v, i) => processVariant(data.master, v, i, v.sku)); if (JSON.stringify(recalculatedVariants) !== JSON.stringify(data.variants)) setData(prev => ({ ...prev, variants: recalculatedVariants })); }, [data.master, data.variants.map(v => v.color + v.size + v.length + v.width + v.height + v.mrp + v.offerPrice).join('|')]);
+
+          return (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-7xl h-[90vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-8 duration-300">
+                <div className="p-6 border-b border-gray-200 bg-white flex justify-between items-start"><div className="flex-1"><div className="flex items-center gap-3 mb-2"><span className="bg-blue-600 text-white text-sm font-bold px-3 py-1 rounded-md">{data.master.baseSku}</span><span className="text-gray-400 text-xs">{data.dateAdded}</span></div><input value={data.master.productName || ""} onChange={e => handleMasterChange('productName', e.target.value)} className="text-2xl font-bold text-gray-900 border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none w-full bg-transparent" placeholder="Product Title"/><div className="flex items-center gap-2 text-sm text-gray-500 mt-2"><span className="bg-gray-100 px-2 py-1 rounded">{data.master.brandName}</span><ChevronRight size={14}/><span>{data.master.mainCategory}</span><ChevronRight size={14}/><span>{data.master.subCategory1}</span></div></div><div className="flex gap-2"><button onClick={onDelete} className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition-colors flex items-center gap-2 text-sm font-bold"><Trash2 size={18}/> Delete</button><button onClick={onClose} className="bg-gray-100 hover:bg-gray-200 p-2 rounded-lg text-gray-600 transition-colors"><X size={24}/></button></div></div>
+                <div className="flex-1 overflow-y-auto p-6 space-y-8 bg-gray-50/50">
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                     <div className="space-y-4">
+                        <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm grid grid-cols-2 gap-4"><div><label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Brand</label><select value={data.master.brandName} onChange={e => handleMasterChange('brandName', e.target.value)} className="w-full text-sm font-bold text-gray-900 bg-white outline-none border-b border-dashed border-gray-200 pb-1">{appSettings.brands.map(b => <option key={b} value={b}>{b}</option>)}</select></div><div><label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Material</label><select value={data.master.material} onChange={e => handleMasterChange('material', e.target.value)} className="w-full text-sm font-bold text-gray-900 bg-white outline-none border-b border-dashed border-gray-200 pb-1">{appSettings.materials.map(m => <option key={m} value={m}>{m}</option>)}</select></div><div><label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">HSN Code</label><input value={data.master.hsnCode} onChange={e => handleMasterChange('hsnCode', e.target.value)} className="w-full text-sm font-bold text-gray-900 bg-white outline-none border-b border-dashed border-gray-200 pb-1"/></div><div className="col-span-1"><label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">Warranty</label><WarrantySelector value={data.master.warrantyType} onChange={(v) => handleMasterChange('warrantyType', v)} /></div></div>
+                        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden"><div className="px-6 py-3 border-b border-gray-100 bg-orange-50 text-orange-900 flex justify-between items-center"><h3 className="font-bold text-xs uppercase flex items-center gap-2"><CheckCircle2 size={14}/> Features & Attributes</h3></div><table className="w-full text-xs"><tbody>{visibleFeatures.map((key) => { const val = data.master.descriptionAttributes[key]; const availableKeys = Object.keys(DESCRIPTION_DEFAULTS).filter(k => !visibleFeatures.includes(k) || k === key); return (<tr key={key} className="border-b border-gray-50 last:border-0 hover:bg-gray-50"><td className="px-4 py-2 w-48 align-middle"><select value={key} onChange={(e) => changeRowKey(key, e.target.value)} className="w-full bg-transparent font-bold text-gray-500 uppercase outline-none cursor-pointer">{availableKeys.map(k => (<option key={k} value={k}>{k.replace(/([A-Z])/g, ' $1').trim()}</option>))}</select></td><td className="px-4 py-2 align-middle">{key === 'additionalFeatures' ? (<MultiSelectAttribute value={val} onChange={(v) => handleDescAttributeChange('additionalFeatures', v)} options={ATTRIBUTE_OPTIONS[key] || []}/>) : (<><input list={`modal_options_${key}`} value={val} onChange={e => handleDescAttributeChange(key, e.target.value)} className="w-full bg-transparent outline-none text-gray-900 font-medium p-1 border-b border-transparent focus:border-blue-300 transition-colors" placeholder="Select or type..."/><datalist id={`modal_options_${key}`}>{(ATTRIBUTE_OPTIONS[key] || []).map((opt, i) => <option key={i} value={opt} />)}</datalist></>)}</td><td className="px-2 py-2 w-10 text-center"><button onClick={() => removeFeatureRow(key)} className="text-gray-400 hover:text-red-500"><X size={14}/></button></td></tr>)})}</tbody></table><button onClick={addFeatureRow} className="w-full py-2 bg-gray-50 text-blue-600 text-xs font-bold hover:bg-blue-50 transition-colors flex items-center justify-center gap-1 border-t border-gray-100"><Plus size={14}/> Add Feature</button></div>
+                     </div>
+                     <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden h-fit"><div className="px-6 py-4 border-b border-gray-100 bg-slate-900 text-white flex justify-between items-center"><h3 className="font-bold text-sm uppercase flex items-center gap-2"><Layers size={16}/> SKU Variants</h3><span className="bg-blue-600 text-[10px] font-bold px-2 py-0.5 rounded text-white">{data.variants.length} items</span></div><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="bg-gray-100 text-gray-600 font-bold text-xs uppercase border-b border-gray-200"><tr><th className="px-4 py-3">SKU</th><th className="px-4 py-3 w-32">Color</th><th className="px-4 py-3 w-28">Size</th><th className="px-4 py-3 text-center w-16">L</th><th className="px-4 py-3 text-center w-16">W</th><th className="px-4 py-3 text-center w-16">H</th><th className="px-4 py-3 w-24">MRP</th><th className="px-4 py-3 w-20">Disc %</th><th className="px-4 py-3 w-24">Offer</th><th className="px-4 py-3 w-16">Qty</th></tr></thead><tbody className="divide-y divide-gray-100">{data.variants.map((v, idx) => (<tr key={idx} className="hover:bg-blue-50/10 transition-colors"><td className="px-4 py-2 font-mono font-bold text-blue-700 text-xs">{v.sku}</td><td className="px-4 py-2"><input list="colors" value={v.color} onChange={e => handleVariantChange(idx, 'color', e.target.value)} className="w-full border border-gray-300 rounded p-1 text-black bg-white text-xs" /></td><td className="px-4 py-2"><select value={v.size} onChange={e => handleVariantChange(idx, 'size', e.target.value)} className="w-full border border-gray-300 rounded p-1 text-black bg-white text-xs">{SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></td><td className="px-1 py-2"><input type="number" value={v.length} onChange={e => handleVariantChange(idx, 'length', +e.target.value)} className="w-full border border-gray-300 rounded p-1 text-center text-black bg-white text-xs"/></td><td className="px-1 py-2"><input type="number" value={v.width} onChange={e => handleVariantChange(idx, 'width', +e.target.value)} className="w-full border border-gray-300 rounded p-1 text-center text-black bg-white text-xs"/></td><td className="px-1 py-2"><input type="number" value={v.height} onChange={e => handleVariantChange(idx, 'height', +e.target.value)} className="w-full border border-gray-300 rounded p-1 text-center text-black bg-white text-xs"/></td><td className="px-2 py-2"><input type="number" value={v.mrp} onChange={e => handleVariantChange(idx, 'mrp', +e.target.value)} className="w-full border border-gray-300 rounded p-1 text-black bg-white text-xs font-bold"/></td><td className="px-2 py-2"><input type="number" value={v.discountPercent} onChange={e => handleVariantChange(idx, 'discountPercent', +e.target.value)} className="w-full border border-gray-300 rounded p-1 text-black bg-white text-xs"/></td><td className="px-2 py-2"><input type="number" value={v.offerPrice} onChange={e => handleVariantChange(idx, 'offerPrice', +e.target.value)} className="w-full border border-green-200 bg-green-50 rounded p-1 text-green-700 font-bold text-xs"/></td><td className="px-2 py-2"><input type="number" value={v.stockQty} onChange={e => handleVariantChange(idx, 'stockQty', +e.target.value)} className="w-full border border-gray-300 rounded p-1 text-black bg-white text-xs"/></td></tr>))}</tbody></table><datalist id="colors">{COLOR_OPTIONS.map(c => <option key={c} value={c} />)}</datalist></div></div>
+                  </div>
+                </div>
+                <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-3"><button onClick={onClose} className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg font-bold text-sm hover:bg-gray-100 transition-colors">Cancel</button><button onClick={() => { onSave(data); onClose(); }} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold text-sm hover:bg-blue-700 shadow-md transition-colors flex items-center gap-2"><Save size={18}/> Save Changes</button></div>
+              </div>
+            </div>
+          );
+        };
+
+        const ProductListPage = ({ products, onDelete, onExport, onUpdate, appSettings }) => {
+          const [editingProduct, setEditingProduct] = useState(null); const [searchTerm, setSearchTerm] = useState("");
+          const filtered = products.filter(p => p.master.baseSku.toLowerCase().includes(searchTerm.toLowerCase()) || (p.master.productName && p.master.productName.toLowerCase().includes(searchTerm.toLowerCase())));
+          return (
+            <div className="space-y-6 animate-in fade-in duration-500">
+               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200"><div><h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><ShoppingBag className="text-purple-600"/> Product Library</h2><p className="text-sm text-gray-500">Manage your catalog of {products.length} products.</p></div><div className="flex gap-3 w-full md:w-auto"><div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-3 text-gray-400" size={18}/><input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 ring-purple-500 outline-none transition-all text-black" placeholder="Search products..." /></div><button onClick={onExport} className="flex items-center gap-2 bg-green-600 text-white px-4 py-2.5 rounded-xl font-bold text-sm hover:bg-green-700 shadow-sm transition-all"><Download size={18}/> Export Excel</button></div></div>
+               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">{filtered.map(product => (<div key={product.id} className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-all overflow-hidden group"><div className="p-5 border-b border-gray-100 bg-gray-50/50 flex justify-between items-start"><div><div className="font-mono font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-xs inline-block mb-2">{product.master.baseSku}</div><h3 className="font-bold text-gray-900 line-clamp-1" title={product.master.productName}>{product.master.productName || "Untitled Product"}</h3><div className="text-xs text-gray-500 mt-1">{product.dateAdded}</div></div><button onClick={() => setEditingProduct(product)} className="text-gray-400 hover:text-blue-600 p-1 rounded-lg hover:bg-blue-50 transition-colors"><Edit3 size={18}/></button></div><div className="p-5 space-y-3"><div className="flex justify-between text-xs"><span className="text-gray-500">Variants</span><span className="font-bold text-gray-900">{product.variants.length}</span></div><div className="flex justify-between text-xs"><span className="text-gray-500">Brand</span><span className="font-bold text-gray-900">{product.master.brandName}</span></div><div className="flex justify-between text-xs"><span className="text-gray-500">Category</span><span className="font-bold text-gray-900 text-right truncate ml-4">{product.master.subCategory1}</span></div></div></div>))}{filtered.length === 0 && (<div className="col-span-full py-20 text-center text-gray-400"><ShoppingBag size={48} className="mx-auto mb-4 opacity-20"/><p>No products found.</p></div>)}</div>
+               {editingProduct && <ProductDetailModal product={editingProduct} onClose={() => setEditingProduct(null)} onDelete={() => { onDelete(editingProduct.id); setEditingProduct(null); }} onSave={(updated) => { onUpdate(updated); setEditingProduct(null); }} appSettings={appSettings} />}
+            </div>
+          );
+        };
+
+        function App() {
+          const [activePage, setActivePage] = useState('entry'); const [sidebarOpen, setSidebarOpen] = useState(false); const [isSyncing, setIsSyncing] = useState(false);
+          const [settings, setSettings] = useState(() => { const saved = localStorage.getItem('stockProSettings'); let parsed = saved ? JSON.parse(saved) : { brands: INITIAL_BRANDS, materials: INITIAL_MATERIALS, categoryRules: INITIAL_CATEGORY_RULES }; parsed.googleScriptUrl = DEFAULT_SCRIPT_URL; return parsed; });
+          const [products, setProducts] = useState([]);
+          
+          // Use INITIAL_MASTER directly as a base. React state updates are merged carefully.
+          const [master, setMaster] = useState({ 
+            mainCategory: "", subCategory1: "", subCategory2: "", hsnCode: "4202", brandName: "", productName: "", material: "", warrantyType: "No warranty", taxType: "TAX18_STD", baseSku: "", descriptionAttributes: { ...DESCRIPTION_DEFAULTS } 
+          });
+
+          const [variants, setVariants] = useState([]); const [processedData, setProcessedData] = useState([]);
+          const [visibleFeatures, setVisibleFeatures] = useState(['compartment']);
+          const [matrixColors, setMatrixColors] = useState([]); const [matrixSizes, setMatrixSizes] = useState([]); const [newSizeConfig, setNewSizeConfig] = useState({ name: "No Size", l: 18, w: 12, h: 20, mrp: 350 });
+          const [colorDropdownOpen, setColorDropdownOpen] = useState(false); const [colorSearch, setColorSearch] = useState(""); const dropdownRef = useRef(null);
+
+          useEffect(() => { localStorage.setItem('stockProSettings', JSON.stringify(settings)); }, [settings]);
+          useEffect(() => { 
+            const initApp = async () => {
+               if (!settings.googleScriptUrl) return;
+               try { await handleSyncConfig(false); } catch (e) { console.error(e); }
+            };
+            initApp();
+          }, []);
+          useEffect(() => { const handleClickOutside = (event) => { if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setColorDropdownOpen(false); }; document.addEventListener("mousedown", handleClickOutside); return () => document.removeEventListener("mousedown", handleClickOutside); }, []);
+
+          const subCat1Options = useMemo(() => getSubCategory1List(settings.categoryRules), [settings.categoryRules]);
+          const subCat2Options = useMemo(() => getSubCategory2List(settings.categoryRules, master.subCategory1), [settings.categoryRules, master.subCategory1]);
+
+          useEffect(() => { const main = determineMainCategory(settings.categoryRules, master.subCategory1); if (main !== master.mainCategory) setMaster(prev => ({ ...prev, mainCategory: main })); }, [master.subCategory1, settings.categoryRules]);
+          useEffect(() => { const skuMap = calculateVariantSKUs(master.baseSku, variants, master.subCategory1); const calculated = variants.map((v, idx) => processVariant(master, v, idx, skuMap[v.id])); setProcessedData(calculated); }, [master, variants]);
+
+          const handleMasterChange = (field, value) => setMaster(prev => ({ ...prev, [field]: value }));
+          const handleDescChange = (field, value) => setMaster(prev => ({ ...prev, descriptionAttributes: { ...prev.descriptionAttributes, [field]: value } }));
+          const clearForm = () => { setMaster({ ...master, baseSku: master.baseSku, mainCategory: master.mainCategory, subCategory1: master.subCategory1 }); setVariants([]); setMatrixColors([]); setMatrixSizes([]); setVisibleFeatures(['compartment']); }; // Keep category & SKU
+          const addFeatureRow = () => { const available = Object.keys(DESCRIPTION_DEFAULTS).filter(k => !visibleFeatures.includes(k)); if (available.length > 0) setVisibleFeatures([...visibleFeatures, available[0]]); };
+          const removeFeatureRow = (key) => { setVisibleFeatures(visibleFeatures.filter(k => k !== key)); handleDescChange(key, ""); };
+          const changeFeatureRowKey = (oldKey, newKey) => { if (!visibleFeatures.includes(newKey)) setVisibleFeatures(visibleFeatures.map(k => k === oldKey ? newKey : k)); };
+
+          const handleSyncConfig = async (notify = true) => {
+            if (!settings.googleScriptUrl) return; setIsSyncing(true);
+            try {
+              let configResult = { status: 'error', data: { brands: [], materials: [], categoryRules: [] } }; let skuResult = { status: 'error', lastSku: '' };
+              try { const configResponse = await fetchWithRetry(`${settings.googleScriptUrl}?action=GET_CONFIG`); configResult = await configResponse.json(); } catch(e) { console.error("Config fetch error", e); }
+              try { const skuResponse = await fetchWithRetry(`${settings.googleScriptUrl}?action=GET_LAST_SKU`); skuResult = await skuResponse.json(); } catch(e) { console.error("SKU fetch error", e); }
+
+              if (configResult.status === 'success') {
+                 const cloudBrands = configResult.data.brands || []; const cloudMaterials = configResult.data.materials || []; const cloudRules = configResult.data.categoryRules || [];
+                 const mergedBrands = Array.from(new Set([...settings.brands, ...cloudBrands])).sort(); const mergedMaterials = Array.from(new Set([...settings.materials, ...cloudMaterials])).sort();
+                 const mergedRules = [...settings.categoryRules];
+                 cloudRules.forEach(cRule => { const existingIndex = mergedRules.findIndex(r => r.subCategory1 === cRule.subCategory1); if (existingIndex >= 0) { const existing = mergedRules[existingIndex]; const combinedSub2 = Array.from(new Set([...existing.subCategory2, ...cRule.subCategory2])); mergedRules[existingIndex] = { ...existing, mainCategory: cRule.mainCategory || existing.mainCategory, subCategory2: combinedSub2 }; } else { mergedRules.push(cRule); } });
+                 const newSettings = { ...settings, brands: mergedBrands, materials: mergedMaterials, categoryRules: mergedRules };
+                 setSettings(newSettings);
+                 await fetchWithRetry(settings.googleScriptUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'SAVE_CONFIG', data: { brands: newSettings.brands, materials: newSettings.materials, categoryRules: newSettings.categoryRules } }) });
+              }
+              let nextSku = ""; if (products.length > 0) { const lastProd = products[0]; const lastVariant = lastProd.variants[lastProd.variants.length - 1]; nextSku = incrementSku(lastVariant.sku); } else if (skuResult.status === 'success' && skuResult.lastSku) { nextSku = incrementSku(skuResult.lastSku); }
+              if (nextSku) setMaster(prev => ({ ...prev, baseSku: nextSku }));
+              if (notify) alert("Data Synced (Merged & Updated)!");
+            } catch (e) { if (notify) alert("Sync failed. Check connection."); console.error("Auto-load failed", e); } finally { setIsSyncing(false); }
+          };
+
+          const handleSaveConfig = () => handleSyncConfig(true);
+          const saveProductToCloud = async () => {
+            if (!master.baseSku || variants.length === 0) { alert("Please enter a SKU and generate variants."); return; }
+            const newProduct = { id: Math.random().toString(36), dateAdded: new Date().toLocaleDateString(), master: { ...master }, variants: [...processedData] };
+            setProducts(prev => [newProduct, ...prev]);
+            if (settings.googleScriptUrl) {
+              try {
+                const sheetData = prepareDataForGoogleSheet([newProduct]);
+                await fetchWithRetry(settings.googleScriptUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ action: 'SAVE_PRODUCT', data: sheetData }) });
+                console.log('Synced to Cloud');
+              } catch (e) { console.error("Cloud sync error", e); alert("Saved locally, but failed to sync to cloud."); }
+            }
+            const lastVariantSku = processedData[processedData.length - 1].sku; const nextBaseSku = incrementSku(lastVariantSku);
+            clearForm(); setMaster(prev => ({...prev, baseSku: nextBaseSku})); setActivePage('products');
+          };
+          const handleProductUpdate = (updatedProduct) => setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
+          const updateVariant = (index, field, value) => { setVariants(prev => { const newVariants = [...prev]; const updatedVariant = { ...newVariants[index], [field]: value }; if (field === 'mrp') updatedVariant.offerPrice = Math.round(updatedVariant.mrp * (1 - updatedVariant.discountPercent / 100)); else if (field === 'discountPercent') updatedVariant.offerPrice = Math.round(updatedVariant.mrp * (1 - value / 100)); else if (field === 'offerPrice' && updatedVariant.mrp > 0) updatedVariant.discountPercent = Math.round(((updatedVariant.mrp - value) / updatedVariant.mrp) * 100 * 100) / 100; newVariants[index] = updatedVariant; if (index === 0 && field === 'discountPercent') { newVariants.forEach((v, idx) => { if (idx > 0) { v.discountPercent = value; v.offerPrice = Math.round(v.mrp * (1 - value / 100)); } }); } return newVariants; }); };
+          const addMatrixSize = () => { if (newSizeConfig.name) { setMatrixSizes([...matrixSizes, { ...newSizeConfig }]); if (newSizeConfig.name === "Small") setNewSizeConfig({ ...newSizeConfig, name: "Medium", l: 23, w: 14, h: 25, mrp: 400 }); } };
+          const toggleColorSelection = (color) => { if (matrixColors.includes(color)) setMatrixColors(matrixColors.filter(c => c !== color)); else setMatrixColors([...matrixColors, color]); };
+          const addCustomColor = () => { if (colorSearch && !matrixColors.includes(colorSearch)) { setMatrixColors([...matrixColors, colorSearch]); setColorSearch(""); } };
+          const generateVariants = () => {
+            let sizesToUse = [...matrixSizes]; if (sizesToUse.length === 0 && newSizeConfig.name === "No Size") { sizesToUse.push({ ...newSizeConfig }); setMatrixSizes(sizesToUse); }
+            if (sizesToUse.length === 0) { alert("⚠️ No Sizes Added!\n\nPlease configure a size (L, W, H, MRP) and click the '+' button to add it to the list before generating variants."); return; }
+            if (matrixColors.length === 0) { alert("⚠️ No Colors Added!\n\nPlease select at least one color."); return; }
+            const newVariants = [];
+            if (master.subCategory1 === "SET OF 3 COMBOS") {
+              const comboStringParts = sizesToUse.map(s => { const vol = calculateVolume(s.l, s.w, s.h, master.subCategory1); return `${s.name} ${vol}-${s.l} cm x ${s.w} cm x ${s.h} cm`; });
+              const comboDescription = comboStringParts.join(","); const maxMrp = Math.max(...sizesToUse.map(s => s.mrp));
+              const maxSizeConfig = sizesToUse.reduce((prev, current) => (prev.l * prev.w * prev.h) > (current.l * current.w * current.h) ? prev : current);
+              matrixColors.forEach(color => { newVariants.push({ id: Math.random().toString(36).substr(2, 9), color, size: "Set of 3", length: maxSizeConfig.l, width: maxSizeConfig.w, height: maxSizeConfig.h, mrp: maxMrp, discountPercent: 20, offerPrice: Math.round(maxMrp * 0.8), stockQty: 1, comboString: comboDescription }); });
+            } else {
+              matrixColors.forEach(color => { sizesToUse.forEach(sizeConfig => { newVariants.push({ id: Math.random().toString(36).substr(2, 9), color, size: sizeConfig.name, length: sizeConfig.l, width: sizeConfig.w, height: sizeConfig.h, mrp: sizeConfig.mrp, discountPercent: 20, offerPrice: Math.round(sizeConfig.mrp * 0.8), stockQty: 1 }); }); });
+            }
+            setVariants(prev => [...prev, ...newVariants]);
+          };
+
+          const renderContent = () => {
+            switch (activePage) {
+              case 'settings': return <SettingsPage settings={settings} setSettings={setSettings} onSaveConfig={handleSaveConfig} isSyncing={isSyncing} />;
+              case 'products': return <ProductListPage products={products} onDelete={(id) => setProducts(prev => prev.filter(p => p.id !== id))} onExport={() => generateExcelForProducts(products)} onUpdate={handleProductUpdate} appSettings={settings} />;
+              case 'stock': return <StockViewPage settings={settings} />;
+              case 'entry': default: return (
+                  <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+                    <div className="flex justify-between items-center bg-white p-5 rounded-xl shadow-sm border border-gray-200"><div><h2 className="text-xl font-bold text-gray-900 flex items-center gap-2"><LayoutDashboard className="text-blue-600" size={24}/> New Stock Entry</h2><p className="text-xs text-gray-500 ml-8">Configure product details and generate SKUs</p></div><div className="flex gap-3"><button onClick={clearForm} className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm transition-colors"><RotateCcw size={16}/> Reset</button></div></div>
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                      <div className="lg:col-span-2 space-y-8">
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 group hover:border-blue-300 transition-colors"><div className="flex items-center gap-2 mb-6 border-b pb-2 border-gray-100"><span className="bg-blue-100 text-blue-700 p-1.5 rounded-md"><Layers size={18}/></span><h3 className="text-sm font-bold uppercase text-gray-800 tracking-wide">Categorization</h3></div><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><ArrowRight size={12}/> Sub Category 1 <span className="text-red-500">*</span></label><input list="subCategory1Options" value={master.subCategory1} onChange={(e) => handleMasterChange('subCategory1', e.target.value)} className="w-full border border-gray-300 rounded-lg p-3 text-sm bg-white text-black focus:ring-2 ring-blue-500 outline-none transition-all shadow-sm" placeholder="Type to search..."/><datalist id="subCategory1Options">{subCat1Options.map(o => <option key={o} value={o} />)}</datalist></div>{subCat2Options.length > 0 && (<div><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><ArrowRight size={12}/> Sub Category 2</label><select value={master.subCategory2} onChange={(e) => handleMasterChange('subCategory2', e.target.value)} disabled={!master.subCategory1} className="w-full border border-gray-300 rounded-lg p-3 text-sm bg-white text-black focus:ring-2 ring-blue-500 outline-none transition-all shadow-sm disabled:opacity-50 disabled:bg-gray-50"><option value="">Select Sub-Type...</option>{subCat2Options.map(o => <option key={o} value={o}>{o}</option>)}</select></div>)}<div className="md:col-span-2 bg-slate-50 p-4 rounded-lg border border-slate-100 flex justify-between items-center"><span className="text-xs font-bold text-slate-500 uppercase">Main Category</span><span className="text-base font-bold text-slate-900">{master.mainCategory || "Auto-Detected"}</span></div></div></div>
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 group hover:border-blue-300 transition-colors"><div className="flex items-center gap-2 mb-6 border-b pb-2 border-gray-100"><span className="bg-purple-100 text-purple-700 p-1.5 rounded-md"><FileText size={18}/></span><h3 className="text-sm font-bold uppercase text-gray-800 tracking-wide">Product Details</h3></div><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><Hash size={12}/> Base SKU <span className="text-red-500">*</span></label><input type="text" value={master.baseSku} onChange={(e) => handleMasterChange('baseSku', e.target.value.toUpperCase())} className="w-full border border-gray-300 rounded-lg p-3 text-sm font-mono uppercase focus:ring-2 ring-blue-500 outline-none bg-white text-black" placeholder="e.g. TRAV-BAG-001"/></div><div><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><Tag size={12}/> Brand Name</label><select value={master.brandName} onChange={(e) => handleMasterChange('brandName', e.target.value)} className="w-full border border-gray-300 rounded-lg p-3 text-sm bg-white text-black focus:ring-2 ring-blue-500 outline-none"><option value="">Select Brand...</option>{settings.brands.map(b => <option key={b} value={b}>{b}</option>)}</select></div><div><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><Box size={12}/> Material</label><select value={master.material} onChange={(e) => handleMasterChange('material', e.target.value)} className="w-full border border-gray-300 rounded-lg p-3 text-sm bg-white text-black focus:ring-2 ring-blue-500 outline-none"><option value="">Select Material...</option>{settings.materials.map(m => <option key={m} value={m}>{m}</option>)}</select></div><div><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><Globe size={12}/> HSN Code</label><input value={master.hsnCode} onChange={(e) => handleMasterChange('hsnCode', e.target.value)} className="w-full border border-gray-300 rounded-lg p-3 text-sm font-mono bg-white text-black"/></div><div className="col-span-2"><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><ShieldCheck size={12}/> Warranty</label><WarrantySelector value={master.warrantyType} onChange={(v) => handleMasterChange('warrantyType', v)} /></div><div className="md:col-span-2"><label className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-1"><Type size={12}/> Product Title (Override)</label><input type="text" value={master.productName} onChange={(e) => handleMasterChange('productName', e.target.value)} className="w-full border border-gray-300 rounded-lg p-3 text-sm bg-white text-black" placeholder="Leave empty to auto-generate from Category + Brand + Details"/></div></div></div>
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-blue-600 shadow-blue-100"><div className="flex items-center gap-2 mb-6 border-b pb-2 border-gray-100"><span className="bg-blue-600 text-white p-1.5 rounded-md"><Layers size={18}/></span><h3 className="text-sm font-bold uppercase text-gray-800 tracking-wide">Variant Matrix</h3></div><div className="mb-8 relative" ref={dropdownRef}><label className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-1">Product Colors</label><div className="flex flex-wrap gap-2 mb-3">{matrixColors.map(c => (<span key={c} className="bg-blue-50 text-blue-800 border border-blue-200 text-xs font-bold px-3 py-1.5 rounded-full flex items-center gap-2 shadow-sm">{c} <button onClick={() => setMatrixColors(prev => prev.filter(x => x !== c))} className="text-blue-400 hover:text-red-500"><X size={14}/></button></span>))}</div><button onClick={() => setColorDropdownOpen(!colorDropdownOpen)} className="w-full flex justify-between items-center bg-white border border-gray-300 text-left px-4 py-3 rounded-lg text-sm shadow-sm hover:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"><span className="text-gray-700">{matrixColors.length > 0 ? `${matrixColors.length} Colors Selected` : "Select Colors..."}</span><ChevronDown size={16} className={`text-gray-400 transition-transform ${colorDropdownOpen ? 'rotate-180' : ''}`} /></button>{colorDropdownOpen && (<div className="absolute z-50 mt-2 w-full bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden animate-in fade-in zoom-in-95 duration-200"><div className="p-3 border-b border-gray-100 bg-gray-50"><input value={colorSearch} onChange={e => setColorSearch(e.target.value)} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" placeholder="Search or add custom color..." autoFocus/></div><div className="max-h-60 overflow-y-auto">{colorSearch && !COLOR_OPTIONS.some(c => c.toLowerCase() === colorSearch.toLowerCase()) && (<button onClick={addCustomColor} className="w-full text-left px-4 py-3 text-sm text-blue-600 font-bold hover:bg-blue-50 flex items-center gap-1"><Plus size={12}/> Add "{colorSearch}"</button>)}{COLOR_OPTIONS.filter(c => c.toLowerCase().includes(colorSearch.toLowerCase())).map(c => { const isSelected = matrixColors.includes(c); return (<div key={c} onClick={() => toggleColorSelection(c)} className={`px-4 py-3 text-sm flex items-center justify-between cursor-pointer hover:bg-gray-50 transition-colors ${isSelected ? 'bg-blue-50/50' : ''}`}><div className="flex items-center gap-3"><div className={`w-4 h-4 rounded border flex items-center justify-center ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-gray-300 bg-white'}`}>{isSelected && <Check size={12} className="text-white"/>}</div><span className={isSelected ? 'font-bold text-gray-900' : 'text-gray-700'}>{c}</span></div></div>); })}</div></div>)}</div><div className="mb-6"><label className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-1">Size Configuration</label><div className="space-y-3 mb-4">{matrixSizes.map((sz, idx) => (<div key={idx} className="flex items-center gap-4 text-sm bg-blue-50/50 p-3 rounded-lg border border-blue-100"><div className="font-bold w-24 text-blue-900">{sz.name}</div><div className="text-gray-600 font-mono text-xs flex gap-3"><span className="bg-white px-2 py-1 rounded border">L: {sz.l}</span><span className="bg-white px-2 py-1 rounded border">W: {sz.w}</span><span className="bg-white px-2 py-1 rounded border">H: {sz.h}</span></div><div className="font-bold text-green-700 ml-auto bg-green-50 px-3 py-1 rounded border border-green-200">₹{sz.mrp}</div><button onClick={() => setMatrixSizes(prev => prev.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-600 hover:bg-red-50 p-1 rounded transition-colors"><Trash2 size={16}/></button></div>))}</div><div className="bg-gray-50 p-5 rounded-xl border border-dashed border-gray-300"><div className="grid grid-cols-6 gap-4 items-end"><div className="col-span-2"><label className="text-[10px] uppercase font-bold text-gray-500 mb-1 block">Size Name</label><select value={newSizeConfig.name} onChange={(e) => setNewSizeConfig({...newSizeConfig, name: e.target.value})} className="w-full border border-gray-300 rounded-lg p-2.5 text-sm bg-white text-black">{SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}</select></div><div><label className="text-[10px] uppercase font-bold text-gray-500 mb-1 block">L (cm)</label><input type="number" className="w-full border border-gray-300 rounded-lg p-2.5 text-sm bg-white text-black" value={newSizeConfig.l} onChange={e => setNewSizeConfig({...newSizeConfig, l: Number(e.target.value)})} /></div><div><label className="text-[10px] uppercase font-bold text-gray-500 mb-1 block">W (cm)</label><input type="number" className="w-full border border-gray-300 rounded-lg p-2.5 text-sm bg-white text-black" value={newSizeConfig.w} onChange={e => setNewSizeConfig({...newSizeConfig, w: Number(e.target.value)})} /></div><div><label className="text-[10px] uppercase font-bold text-gray-500 mb-1 block">H (cm)</label><input type="number" className="w-full border border-gray-300 rounded-lg p-2.5 text-sm bg-white text-black" value={newSizeConfig.h} onChange={e => setNewSizeConfig({...newSizeConfig, h: Number(e.target.value)})} /></div><div><label className="text-[10px] uppercase font-bold text-gray-500 mb-1 block">MRP</label><input type="number" className="w-full border border-gray-300 rounded-lg p-2.5 text-sm bg-white text-black font-bold" value={newSizeConfig.mrp} onChange={e => setNewSizeConfig({...newSizeConfig, mrp: Number(e.target.value)})} /></div></div><button onClick={addMatrixSize} className="w-full mt-4 bg-white border border-gray-300 text-gray-700 py-2.5 rounded-lg text-xs font-bold uppercase hover:bg-gray-50 hover:border-gray-400 transition-colors flex items-center justify-center gap-2"><Plus size={14}/> Add Size Configuration</button></div></div><button onClick={generateVariants} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 hover:shadow-xl transition-all flex items-center justify-center gap-2 transform active:scale-[0.99]"><Layers size={20}/> GENERATE VARIANTS</button></div></div>
+                      <div className="space-y-6"><div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 sticky top-24"><div className="flex items-center gap-2 mb-6 border-b pb-2 border-gray-100"><span className="bg-orange-100 text-orange-700 p-1.5 rounded-md"><CheckCircle2 size={18}/></span><h3 className="text-sm font-bold uppercase text-gray-800 tracking-wide">Features & Attributes</h3></div><div className="space-y-0.5 max-h-[calc(100vh-200px)] overflow-y-auto pr-1 custom-scrollbar">{visibleFeatures.map((key) => { const availableKeys = Object.keys(DESCRIPTION_DEFAULTS).filter(k => !visibleFeatures.includes(k) || k === key); return (<div key={key} className="flex items-center bg-gray-50 rounded border border-transparent hover:border-blue-300 transition-colors mb-1"><div className="w-40 p-2 border-r border-gray-200"><select value={key} onChange={(e) => changeFeatureRowKey(key, e.target.value)} className="w-full bg-transparent text-[10px] font-bold text-gray-500 uppercase outline-none cursor-pointer">{availableKeys.map(k => (<option key={k} value={k}>{k.replace(/([A-Z])/g, ' $1').trim()}</option>))}</select></div><div className="flex-1 flex items-center">{key === 'additionalFeatures' ? (<div className="p-1 w-full"><MultiSelectAttribute value={master.descriptionAttributes[key]} onChange={(v) => handleDescChange('additionalFeatures', v)} options={ATTRIBUTE_OPTIONS[key] || []}/></div>) : (<div className="relative w-full"><input list={`options_${key}`} value={master.descriptionAttributes[key]} onChange={(e) => handleDescChange(key, e.target.value)} className="w-full p-2 text-xs bg-white text-black outline-none font-medium" placeholder="Select or type..."/><datalist id={`options_${key}`}>{(ATTRIBUTE_OPTIONS[key] || []).map((opt, i) => (<option key={i} value={opt} />))}</datalist></div>)}<button onClick={() => removeFeatureRow(key)} className="p-2 text-gray-400 hover:text-red-500 transition-colors"><X size={14}/></button></div></div>)})} <button onClick={addFeatureRow} className="w-full py-2 bg-gray-50 text-blue-600 text-xs font-bold hover:bg-blue-50 transition-colors flex items-center justify-center gap-1 border border-dashed border-gray-300 rounded-lg mt-2"><Plus size={14}/> Add Feature</button></div></div></div>
+                    </div>
+                    {variants.length > 0 && (<div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden mb-12 animate-in slide-in-from-bottom-8"><div className="p-6 bg-slate-900 border-b border-slate-800 flex justify-between items-center text-white"><h3 className="font-bold flex items-center gap-2"><Layers size={20} className="text-blue-400"/> Generated Variants Preview</h3><span className="bg-blue-600 text-xs px-3 py-1 rounded-full font-bold">{variants.length} Items</span></div><div className="overflow-x-auto"><table className="w-full text-xs text-left"><thead className="bg-gray-100 text-gray-700 uppercase font-bold border-b border-gray-200"><tr><th className="px-4 py-3">Color</th><th className="px-4 py-3">Size</th><th className="px-4 py-3 text-right">L x W x H</th><th className="px-4 py-3 text-right">Vol</th><th className="px-4 py-3 w-32"><DollarSign size={12} className="inline mr-1"/>MRP</th><th className="px-4 py-3 w-24">Disc %</th><th className="px-4 py-3 w-32">Offer Price</th><th className="px-4 py-3 w-24">Stock</th><th className="px-4 py-3">Preview Title</th></tr></thead><tbody className="divide-y divide-gray-200 bg-white">{variants.map((v, i) => (<tr key={v.id} className="hover:bg-blue-50/50 transition-colors group"><td className="px-4 py-3 font-medium text-gray-900">{v.color}</td><td className="px-4 py-3 font-medium text-gray-900">{v.size === 'No Size' ? '-' : v.size}</td><td className="px-4 py-3 text-right text-gray-500 font-mono">{v.length}x{v.width}x{v.height}</td><td className="px-4 py-3 text-right font-bold text-blue-600">{processedData[i]?.volume}</td><td className="px-4 py-3"><input type="number" value={v.mrp} onChange={(e) => updateVariant(i, 'mrp', Number(e.target.value))} className="w-full border border-gray-300 bg-white rounded p-2 text-right focus:border-blue-500 outline-none transition-colors text-black" /></td><td className="px-4 py-3"><input type="number" value={v.discountPercent} onChange={(e) => updateVariant(i, 'discountPercent', Number(e.target.value))} className="w-full border border-gray-300 bg-white rounded p-2 text-right focus:border-blue-500 outline-none transition-colors text-black" /></td><td className="px-4 py-3"><input type="number" value={v.offerPrice} onChange={(e) => updateVariant(i, 'offerPrice', Number(e.target.value))} className="w-full border border-green-200 bg-green-50 rounded p-2 text-right font-bold text-green-800 focus:border-green-500 outline-none transition-colors" /></td><td className="px-4 py-3"><input type="number" value={v.stockQty} onChange={(e) => updateVariant(i, 'stockQty', Number(e.target.value))} className="w-full border border-gray-300 bg-white rounded p-2 text-right focus:border-blue-500 outline-none transition-colors text-black" /></td><td className="px-4 py-3 text-gray-500 truncate max-w-xs text-[10px]" title={processedData[i]?.title}>{processedData[i]?.title}</td></tr>))}</tbody></table></div><div className="p-6 bg-gray-50 border-t border-gray-200 flex justify-end"><button onClick={saveProductToCloud} className="flex items-center gap-3 px-8 py-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg shadow-xl shadow-blue-200 transition-all transform hover:-translate-y-1 active:scale-95"><Save size={24}/> SAVE PRODUCT TO CLOUD</button></div></div>)}
+                  </div>
+                );
+            }
+          };
+
+          return (
+            <div className="min-h-screen bg-gray-100 font-sans text-black flex">
+              {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-40 md:hidden" onClick={() => setSidebarOpen(false)}></div>}
+              <Sidebar activePage={activePage} setActivePage={setActivePage} isOpen={sidebarOpen} setIsOpen={setSidebarOpen} onSync={() => handleSyncConfig(true)} isSyncing={isSyncing} />
+              <div className="flex-1 md:ml-64 transition-all duration-200"><div className="md:hidden bg-slate-900 text-white p-4 flex items-center gap-4 shadow sticky top-0 z-30"><button onClick={() => setSidebarOpen(true)}><Menu/></button><h1 className="font-bold">STOCK PRO</h1></div><div className="p-4 md:p-8 max-w-[1600px] mx-auto">{renderContent()}</div></div>
+            </div>
+          );
+        }
+
+        const rootElement = document.getElementById('root');
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(<React.StrictMode><App /></React.StrictMode>);
+    </script>
+</body>
+</html>
