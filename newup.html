@@ -1,0 +1,1758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    
+    <link rel="icon" type="image/svg+xml" href="https://www.roshanbags.com/Images/icons/package.svg" />
+    <title>Stock Entry Management Pro</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- UMD Libraries for Local Execution (Fixes Blank Page on file://) -->
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons UMD -->
+    <script src="https://unpkg.com/lucide-react@0.292.0/dist/umd/lucide-react.js"></script>
+    <!-- XLSX UMD -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+      body { font-family: 'Inter', sans-serif; }
+      
+      /* Hide Number Input Spinners */
+      input::-webkit-outer-spin-button,
+      input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      input[type=number] {
+        -moz-appearance: textfield;
+      }
+      
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background: #f1f1f1; 
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #cbd5e1; 
+        border-radius: 4px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8; 
+      }
+      
+      /* Animation Utilities */
+      .animate-in { animation-duration: 0.3s; animation-fill-mode: both; }
+      .fade-in { animation-name: fadeIn; }
+      .slide-in-from-bottom-4 { animation-name: slideInFromBottom; }
+      .zoom-in-95 { animation-name: zoomIn; }
+      .slide-in-from-right-4 { animation-name: slideInFromRight; }
+      
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes slideInFromBottom { from { transform: translateY(1rem); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      @keyframes slideInFromRight { from { transform: translateX(1rem); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+      @keyframes zoomIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+      /* SEARCH HIGHLIGHT ANIMATION */
+      @keyframes blink-attention {
+        0%, 100% { 
+          border-color: #ef4444; 
+          background-color: #fee2e2; 
+          box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2); 
+        }
+        50% { 
+          border-color: #b91c1c; 
+          background-color: #fca5a5; 
+          box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.5); 
+        }
+      }
+      
+      .animate-blink-red {
+        animation: blink-attention 1.5s infinite ease-in-out;
+        z-index: 20 !important;
+      }
+    </style>
+</head>
+<body class="bg-gray-50 text-slate-900">
+    <div id="root"></div>
+
+    <!-- 
+      ========================================
+      GOOGLE APPS SCRIPT SOURCE CODE
+      Copy the code below into your Google Script Editor
+      ========================================
+    -->
+    <script type="text/plain" id="google-script-source">
+/* 
+  StockPro Google Apps Script 
+  Handles saving Stock Entries, System Configuration, Fetching Last SKU, Stock View Data, and Updating Locations.
+*/
+
+function doGet(e) {
+  return handleRequest(e);
+}
+
+function doPost(e) {
+  return handleRequest(e);
+}
+
+function handleRequest(e) {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(30000);
+
+  try {
+    let action = '';
+    let payload = {};
+
+    if (e.postData && e.postData.contents) {
+      try {
+        const body = JSON.parse(e.postData.contents);
+        action = body.action;
+        payload = body.data;
+      } catch (jsonErr) {
+        return response({ status: 'error', message: 'Invalid JSON body' });
+      }
+    } else if (e.parameter) {
+      action = e.parameter.action;
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // --- 1. SAVE PRODUCT ENTRIES ---
+    if (action === 'SAVE_PRODUCT') {
+      const sheet = getOrCreateSheet(ss, 'Entries');
+      const rows = payload; 
+      if (rows && rows.length > 0) {
+        const startRow = Math.max(sheet.getLastRow() + 1, 2); 
+        sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
+      }
+      return response({ status: 'success', message: 'Entries saved successfully' });
+    }
+
+    // --- 2. SAVE CONFIGURATION ---
+    if (action === 'SAVE_CONFIG') {
+      const sheet = getOrCreateSheet(ss, 'System Configuration');
+      sheet.clear(); 
+      const rows = [['TYPE', 'VALUE']]; 
+      if (payload.brands) payload.brands.forEach(function(b) { rows.push(['BRAND', b]); });
+      if (payload.materials) payload.materials.forEach(function(m) { rows.push(['MATERIAL', m]); });
+      if (payload.categoryRules) payload.categoryRules.forEach(function(r) { rows.push(['RULE', JSON.stringify(r)]); });
+      sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+      return response({ status: 'success', message: 'Configuration saved' });
+    }
+
+    // --- 3. GET CONFIGURATION ---
+    if (action === 'GET_CONFIG') {
+      const sheet = getOrCreateSheet(ss, 'System Configuration');
+      const lastRow = sheet.getLastRow();
+      const config = { brands: [], materials: [], categoryRules: [] };
+      if (lastRow > 1) {
+        const data = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+        for (let i = 0; i < data.length; i++) {
+          const type = data[i][0];
+          const value = data[i][1];
+          if (type === 'BRAND') config.brands.push(value);
+          if (type === 'MATERIAL') config.materials.push(value);
+          if (type === 'RULE') { try { config.categoryRules.push(JSON.parse(value)); } catch (err) {} }
+        }
+      }
+      return response({ status: 'success', data: config });
+    }
+
+    // --- 4. GET LAST SKU ---
+    if (action === 'GET_LAST_SKU') {
+      const sheet = getOrCreateSheet(ss, 'Entries');
+      const lastRow = sheet.getLastRow();
+      let lastSku = "";
+      if (lastRow > 1) {
+        const startRow = Math.max(2, lastRow - 50);
+        const numRows = lastRow - startRow + 1;
+        const data = sheet.getRange(startRow, 1, numRows, 1).getValues();
+        for (let i = data.length - 1; i >= 0; i--) {
+          if (data[i][0] && data[i][0] !== "") {
+            lastSku = data[i][0].toString();
+            break;
+          }
+        }
+      }
+      return response({ status: 'success', lastSku: lastSku });
+    }
+
+    // --- 5. GET STOCK DATA ---
+    if (action === 'GET_STOCK_DATA') {
+      const sheet = getOrCreateSheet(ss, 'STOCKS');
+      const lastRow = sheet.getLastRow();
+      const stockData = [];
+      if (lastRow > 1) {
+        const data = sheet.getRange(2, 1, lastRow - 1, 27).getValues(); // A to AA
+        for (let i = 0; i < data.length; i++) {
+          const row = data[i];
+          const sku = row[11]; // Col L
+          const storageId = row[25]; // Col Z
+          const barcodes = row[26]; // Col AA
+          if (sku) {
+            stockData.push({
+              sku: sku.toString(),
+              name: row[3], // Col D
+              mrp: row[5],  // Col F
+              location: storageId ? storageId.toString() : "Unassigned",
+              barcodes: barcodes ? barcodes.toString() : ""
+            });
+          }
+        }
+      }
+      return response({ status: 'success', data: stockData });
+    }
+
+    // --- 6. UPDATE STOCK LOCATION ---
+    if (action === 'UPDATE_STOCK_LOCATION') {
+      const sheet = getOrCreateSheet(ss, 'STOCKS');
+      const lastRow = sheet.getLastRow();
+      const targetSku = String(payload.sku || "").trim().toUpperCase();
+      const newLocation = payload.location;
+      let updated = false;
+
+      if (lastRow > 1) {
+        const skuData = sheet.getRange(2, 12, lastRow - 1, 1).getValues();
+        for (let i = 0; i < skuData.length; i++) {
+          const rowSku = String(skuData[i][0] || "").trim().toUpperCase();
+          if (rowSku === targetSku) {
+            sheet.getRange(i + 2, 26).setValue(newLocation);
+            updated = true;
+            break; 
+          }
+        }
+      }
+      
+      if (updated) {
+        return response({ status: 'success', message: 'Location updated' });
+      } else {
+        return response({ status: 'error', message: 'SKU "' + targetSku + '" not found in STOCKS sheet. Ensure it is synced from Entries.' });
+      }
+    }
+
+    // --- 7. UPDATE STOCK BARCODES ---
+    if (action === 'UPDATE_STOCK_BARCODES') {
+      const sheet = getOrCreateSheet(ss, 'STOCKS');
+      const lastRow = sheet.getLastRow();
+      const targetSku = String(payload.sku || "").trim().toUpperCase();
+      const newBarcodes = payload.barcodes;
+      let updated = false;
+
+      if (lastRow > 1) {
+        const skuData = sheet.getRange(2, 12, lastRow - 1, 1).getValues();
+        for (let i = 0; i < skuData.length; i++) {
+          const rowSku = String(skuData[i][0] || "").trim().toUpperCase();
+          if (rowSku === targetSku) {
+            sheet.getRange(i + 2, 27).setValue(newBarcodes);
+            updated = true;
+            break; 
+          }
+        }
+      }
+      
+      if (updated) {
+        return response({ status: 'success', message: 'Barcodes updated' });
+      } else {
+        return response({ status: 'error', message: 'SKU "' + targetSku + '" not found.' });
+      }
+    }
+
+    return response({ status: 'error', message: 'Unknown Action: ' + action });
+
+  } catch (error) {
+    return response({ status: 'error', message: error.toString() });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getOrCreateSheet(ss, name) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+  }
+  return sheet;
+}
+
+function response(data) {
+  return ContentService.createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+    </script>
+
+    <!-- Main Application Code -->
+    <script type="text/babel">
+        // ==========================================
+        // 0. GLOBALS & IMPORTS
+        // ==========================================
+        const { useState, useEffect, useMemo, useRef } = React;
+        const { createRoot } = ReactDOM;
+        
+        // Lucide Icons from UMD global
+        const { 
+          Plus, Trash2, Save, RotateCcw, Download, Layers, X, ArrowRight, 
+          LayoutDashboard, ShoppingBag, Settings, Package, Menu, ChevronRight, AlertCircle,
+          Tag, Box, Hash, Ruler, FileText, CheckCircle2, DollarSign, Type, Globe, ShieldCheck, Briefcase, ChevronDown, Check, Cloud, RefreshCw, UploadCloud, Link, Eye, Edit3, Search, MapPin, Archive, PenLine, LayoutGrid, List, DoorOpen, Ban, Boxes, Minus, GripVertical, Settings2, ArrowUp, ArrowDown, Loader2, ScanBarcode
+        } = lucideReact;
+
+        // XLSX is available as global `XLSX`
+
+        // ==========================================
+        // 1. TYPES & CONSTANTS
+        // ==========================================
+        
+        const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz0-3rNJYwU4SK8a1XiaIGzcjt34QYt9Aha2TnC7OEz63oADhW3LOlI-ZtDamC2HMxr/exec";
+
+        const INITIAL_CATEGORY_RULES = [
+          { mainCategory: "LUGGAGE", subCategory1: "HARD", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "SOFT", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "SET OF 3 COMBOS", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "KIDS LUGGAGE", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "BRIEFCASE", subCategory2: [] },
+          { mainCategory: "LUGGAGE", subCategory1: "STUDENT OFFER", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "SATCHEL", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "TOTE", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "SLING BAG", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "LEATHER BAG", subCategory2: [] },
+          { mainCategory: "HANDBAGS", subCategory1: "SHOPPING TOTE", subCategory2: [] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "SCHOOL", subCategory2: ["KG to Grade 1", "Grade 2 to Grade 6", "Grade 7 and Above"] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "COLLEGE", subCategory2: ["Unisex", "Women"] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "LUNCH BAGS", subCategory2: [] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "MESSENGER BAGS", subCategory2: [] },
+          { mainCategory: "SCHOOL AND COLLEGE ESSENTIALS", subCategory1: "SCHOOL BAG WITH TROLLEY", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "DUFFLE BAGS", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "DUFFLE TROLLEY", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "GYM BAG", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "RUCKSACK", subCategory2: [] },
+          { mainCategory: "TRAVEL GEARS", subCategory1: "TRAVEL SLING", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "TOILETRY KIT", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "WALLETS", subCategory2: ["MENS", "WOMENS"] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "VANITY CASE AND POUCH", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "KIDS BAG", subCategory2: [] },
+          { mainCategory: "WALLETS AND ACCESSORIES", subCategory1: "MATERNITY BAG", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "LAPTOP OVERNIGHTER", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "LAPTOP BACKPACK", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "EXECUTIVE BAGS", subCategory2: [] },
+          { mainCategory: "FOR PROFESSIONALS", subCategory1: "BACKPACK WITH TROLLEY", subCategory2: [] },
+        ];
+
+        const INITIAL_BRANDS = ["Roshan", "American Tourister", "Skybags", "Safari"];
+        const INITIAL_MATERIALS = ["Polyester", "Nylon", "Leather", "Faux Leather", "Canvas", "Polypropylene", "Polycarbonate"];
+
+        const SIZE_OPTIONS = ["No Size", "Small", "Medium", "Large", "Cabin", "Check-in"];
+        const COLOR_OPTIONS = ["Black", "Teal", "Grey", "Blue", "Red", "Green", "Navy", "Peach", "Natural Brown", "White", "Yellow"];
+        
+        const WARRANTY_OPTIONS = [
+          "No warranty", "3 Months warranty", "6 Months warranty", "18 Months warranty", "1 Year warranty", "3 Years warranty", "5 Years warranty", "10 Years warranty"
+        ];
+        
+        const RACKS_LEFT = ['H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
+        const RACKS_RIGHT = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+        const SHELF_LEVELS = ['0', '1', '2', '3', '4']; // 0 is Top
+        
+        const DEFAULT_AISLE_LAYOUT = [
+          { id: 'g1', name: 'Row 1', boxes: ['Box 1', 'Box 2'] },
+          { id: 'g2', name: 'Row 2', boxes: ['Box 3', 'Box 4'] },
+          { id: 'g3', name: 'Row 3', boxes: ['Box 5', 'Box 6'] },
+          { id: 'g4', name: 'Row 4', boxes: ['Box 7', 'Box 8'] },
+          { id: 'g4', name: 'Row 4', boxes: ['Box 9', 'Box 10'] },
+        ];
+
+        const DESCRIPTION_DEFAULTS = {
+          compartment: "", additionalCompartment: "", interiorPockets: "", exteriorPockets: "",
+          organizerPockets: "", quickAccessPockets: "", handles: "", bottomBushes: "",
+          wheel: "", strolly: "", lock: "", technology: "", rainCover: "", slingStrap: "",
+          waterBottle: "", materialQuality: "", laptop: "", zipClosure: "", additionalFeatures: ""
+        };
+
+        const ATTRIBUTE_OPTIONS = {
+          compartment: ["1 Main Compartment", "2 Main Compartment", "3 Main Compartment", "Spacious Main Compartment", "2 Spacious Main Compartment", "3 Spacious Main Compartment", "Wide currency pocket accommodates various bills", "Flat currency slot designed for easy retrieval", "Organized currency slot for easy access", "Spacious currency slot for bills and notes", "Large main section for easy access", "Roomy main compartment with adjustable dividers", "Main compartment with ample packing space", "Spacious Interior", "Spacious Main Compartment with Magnetic Button Closure", "4 Spacious Main Compartment", "50-50 Split Compartment – Balanced storage with a center-zippered divider for easy organization."],
+          additionalCompartment: ["Additional Front Compartment", "Additional 2 Exterior Compartment", "Multiple card slots for organized storage", "Convenient card slots for easy access", "Addition 2 Side Slip Pocket", "Additional 2 Side Zip Pocket", "Centre Zip Partition", "Front Secret Zip Pocket", "Front & Back Slip Pocket", "Front Slip Pocket", "Additional 4 Side Zip Pocket", "Separate Shoe Section with Zip Closure"],
+          interiorPockets: ["Interior Zip Pocket", "2 Inside Zip Pockets", "Multiple Inside Zip pockets", "Divider Partition", "Divided Partition With Zip pocket", "Convenient coin slot with secure closure", "Zippered coin pocket for organized storage", "Sturdy coin slot keeps change in place", "Mesh interior pockets for visibility and access", "Various interior pockets for efficient organization", "Interior Zip and Slip Pocket", "Interior Slip Pocket"],
+          exteriorPockets: ["Additional Exterior Pocket", "Front Zip pocket", "Back Zip Pocket", "Front & Back Zip Pocket", "Top Side Zip Pocket", "Side Zip Pocket", "Back Zip & Slip Pocket", "Designed with a front zip pocket for quick access to frequently used items."],
+          organizerPockets: ["Interior Organizer Pocket", "Multi Interior Accessories Pockets", "Wet Pouches & Organizer pockets", "Multiple zip pockets and built-in organizers for better storage"],
+          quickAccessPockets: ["Quick-access pockets ", " Easy-to-open zippers", "Quick Access Fron Zip pocket", "Keep tiny essentials handy with a sleek side pocket"],
+          handles: ["Reinforced top handle for a secure grip_ making it easy to carry the bag effortlessly", "2 Soft Comfy Handles", "Heavy & Strong Handles", "Top Handle", "Side Handle", "Top and Side handles", "Single handle design for effortless transport", "Ergonomic single handle for comfortable grip", "Dual soft handles for comfortable lifting", "Soft handles on two sides for versatile carrying", "Sturdy side handle for easy lifting and handling", "Strong side handle for secure lifting", "Reinforced top handle for sturdy support", "Top handle for quick and easy grab-and-go", "Convenient top and side handles for easy maneuvering", "Padded top and side handles for added comfort", "Ergonomic top and side handles for comfortable grip", "Comfy Single Handle", "Cushion Padded Shoulder Strap", "Dual Tube Pull Handle"],
+          bottomBushes: ["2 Bottom Bushes For Safety", "4 Bottom Bushes For Safety", "5 Bottom Bushesh For Safety", "Padded with 2 Bottom bushes", "Padded with 4 Bottom Bushes", "Padded with 5 Bottom Bushes", "3 Side Bushes For Safety", "4 Side Bushes For Safety", "3 Side Bottom For Safety", "Textured, padded bottom designed to absorb shocks and protect belongings", "Provides extra grip when placed on various surfaces, preventing sliding", "4 Bottom Steel Nut"],
+          wheel: ["Smooth and silent strolly wheel movement", "Durable wheels for effortless travel", "360-degree wheels for easy maneuvering", "Shock-absorbing wheels for smooth rides", "Increased support with double wheels", "Double wheels for improved balance", "Double wheels provide enhanced stability", "Effortless navigation with double wheels", "360-degree dual wheels"],
+          strolly: ["Telescopic trolley handle for easy adjustment", "Durable handle for heavy-duty use", "Smooth, extendable handle for quick access", "Adjustable handle for personalized height", "Lightweight handle for easy lifting"],
+          lock: ["Secure number lock for safe travel.", "Customizable number lock for protection", "Convenient number lock for quick access", "Compact number lock for safe storage", "Lock with TSA-approved combination security", "Airport security-friendly TSA lock design", "TSA lock ensures safe luggage inspection"],
+          technology: ["Built-in USB port for charging", "Keep charged with USB convenience", "Keep data safe with RFID", "RFID blocking for secure travel", "RFID blocking protects credit cards", "RFID protection blocks unauthorized scanning", "Integrated RFID protection and USB charging", "ecure RFID blocking and USB charging", "Built-in USB port for charging- For cabin Size Only"],
+          rainCover: ["Weather-resistant rain cover for complete protection", "Rain cover ensures your items stay dry", "Secure your gear with a rain cover", "Protective rain cover for all-weather use"],
+          slingStrap: ["Easily detachable sling strap for convenience", "Detachable sling strap for adjustable carrying", "Switch between styles with removable sling", "Non-removable sling strap for secure carry", "Non-detachable sling strap ensures durability", "Secure, non-removable sling strap for reliability", "Adjustable and removable shoulder straps included", "Switch between styles with removable shoulder straps", "Fixed backpack straps for consistent comfort", "Integrated shoulder straps ensure stability", "Compression straps for organized and stable packing.", "Packing straps to prevent shifting during travel", "Adjustable packing straps for secure packing", "Cross straps to keep items in place", "Padded Sholder Strap For Comfort & Ease Of Carrying", "Tractum-Suspension Strap helps distribute weight evenly, improving comfort and reducing strain on your shoulders"],
+          waterBottle: ["Side pocket securely holds your water bottle", "Side water bottle holder for quick hydration", "Keep your bottle handy with side holder", "Efficient one-side water bottle storage", "Single-side bottle holder for efficient use", "Double-side design for extra bottle storage", "Dual-side pockets for easy hydration", "Two Side Water Bottle Holder", "Interior Water Bottle Holder"],
+          materialQuality: ["High-quality material for durability and style", "Top-grade material offers lasting performance", "Standard fabric ensures good performance", "Environmentally friendly fabric with quality durability", "Recycled material ensures eco-conscious quality", "Green material for lasting performance and eco-friendliness", "Durable and washable standard material for everyday use", "Recycled_ easy-to-clean fabric with quality durability", "Durable_ water-resistant_ and washable for all weather"],
+          laptop: ["Protective laptop sleeve with secure closure", "Laptop sleeve with cushioned padding for safety", "Padded laptop sleeve for secure protection", "Protective laptop holder with quick access", "Integrated laptop and tablet holders for convenience", "Dual compartments for laptop and tablet storage", "Secure and cushioned pockets for laptop and tablet", "Dedicated tablet compartment for safe storage", "File Holder", "Laptop Compatible [ Cabin Size Only ]", "Padded 15.6-inch Laptop Compartment"],
+          zipClosure: ["Classic zip closure for secure access", "Reliable standard zip for everyday use", "Durable zip closure for dependable security", "Dual zips for added security and access", "Flap closure for a stylish and practical design", "Secure magnetic fastenings for effortless use", "Convenient magnetic closure with a sleek design", "Lock closure for extra security during travel", "Secure lock closure for protecting valuables", "Lock closure for added security and peace of mind", "Multiple lock system for enhanced security, no zippers.", "Locking mechanisms without zips for extra protection", "Multiple lock closures for zip-free security", "Convenient drawstring closure for quick access", "Drawstring closure with a snug, adjustable fit", "Durable clip lock closure for dependable security", "Reliable clip lock for a tight and secure fit", "Dual zips with anti-theft technology", "Anti-theft zippers protect valuables"],
+          additionalFeatures: ["Expandable capacity for additional luggage space", "Expandable volume for extra packing space", "Increase storage with expandable capacity", "Packing cubes for hassle-free organization", "Travel smart with integrated packing cubes", "Protect your suit with an in-built blazer cover", "Built-in cover shields luggage from dirt and scratches", "Keep your bag clean with an attached cover", "Light Weight And Strong", "Air mesh passage on the back for improved ventilation and comfort", "Keeps your shoes organized and separate, protecting them and your clothes during travel.", "Trolley-Compatible Strap for Hands-Free Carrying", "Air Groove Plus TechnologyTM", "Features a scratch-resistant shell for lasting durability and a sleek look.", "Crafted with high-quality materials that balance durability and feather-light comfort ensuring long-lasting use without added bulk", "Designed for effortless carrying with a sturdy yet soft-grip handle that offers a comfortable hold making it easy to grab and go", "Detachable Mini Pouch – A stylish and functional side pouch, perfect for storing small essentials like coins, keys, or earphones, with a secure clip attachment for easy access and added convenience.", "Dual Shoulder Straps for Backpack-Style Carry", "Front zip pocket with magnetic button closure"]
+        };
+
+        const EXCEL_COLUMNS = [
+          "SKU", "Material_category", "Sub_category_level_1", "Sub_category_level_2", "HSN_code", "Seller_SKU", 
+          "Brand_name", "Product_ID", "Item_name_title", "Model_number", "Manufacturer", "Product_description", 
+          "Product_bullet_points", "Power_source_type", "Included_components", "Manufacturer_contact_details", 
+          "Item_type_name", "Number_of_packages", "Unit_count_per_product", "Unit_count_type", "Item_length", 
+          "Item_length_unit_of_measure", "Item_width", "Item_width_unit_of_measure", "Item_height", "Item_height_unit_of_measure", 
+          "Country_of_origin", "Your_selling_price", "Condition_type", "Currency", "Maximum_retail_price", 
+          "Sustainable_green_material_check", "Manufacturer_warranty_description", "Display_image_URL", "Other_images_URL", 
+          "Variation_theme", "Variation_type", "Parent_SKU", "Item_imported", "Importer_contact", "Manufacturer_part_number", 
+          "Update_delete", "Intended_product_use_with", "Model_year", "Search_keywords", "Color_names", "Pattern_name", 
+          "Size_name", "Primary_material_type", "Finish_type", "Plug_type", "Special_features", "Item_weight", 
+          "Item_weight_unit_of_measure", "Shipping_weight", "Shipping_weight_unit_of_measure", "Item_volume", 
+          "Item_volume_unit_of_measure", "Are_batteries_included", "Is_the_product_a_battery_itself", "Battery_type", 
+          "Battery_weight", "Battery_weight_unit_of_measure", "Voltage", "Safety_warning", "Legal_disclaimer", "Product_tax_code", 
+          "Maximum_order_ship_quantity", "Sale_price", "Sale_start_date", "Sale_end_date", "Fulfilment_latency", "Release_date", 
+          "Stop_selling_date", "Max_order_quantity", "Is_product_expirable", "Commission_percent", "Return_and_refund", 
+          "Warranty_term", "Inventory_Qty"
+        ];
+
+        // ==========================================
+        // 2. UTILITY LOGIC
+        // ==========================================
+
+        const fetchWithRetry = async (url, options, retries = 3, backoff = 1000) => {
+          for (let i = 0; i < retries; i++) {
+            try {
+              const response = await fetch(url, options);
+              if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+              return response;
+            } catch (e) {
+              if (i === retries - 1) throw e;
+              await new Promise(res => setTimeout(res, backoff * (i + 1))); 
+            }
+          }
+          throw new Error("Fetch failed after retries");
+        };
+
+        const SUB_CATEGORY_DISPLAY_MAP = {
+          "HARD": "Hard Luggage", "SOFT": "Soft Luggage", "SET OF 3 COMBOS": "Set of 3 Combo Luggage",
+          "KIDS LUGGAGE": "Kids Strolly", "BRIEFCASE": "Briefcase", "STUDENT OFFER": "luggage",
+          "SATCHEL": "Satchel Handbag", "TOTE": "Tote Handbag", "SLING BAG": "Women Crossbody Bag",
+          "LEATHER BAG": "Leather Handbag", "SHOPPING TOTE": "Shopping Tote Bag", "SCHOOL": "School Bag",
+          "COLLEGE": "College Backpack", "LUNCH BAGS": "Lunch Bag", "MESSENGER BAGS": "Messenger Bag",
+          "SCHOOL BAG WITH TROLLEY": "School Bag With Strolly", "DUFFLE BAGS": "Duffle Bag",
+          "DUFFLE TROLLEY": "Duffle Strolly", "GYM BAG": "Gym Bag", "RUCKSACK": "Trekking bag",
+          "TRAVEL SLING": "Travel Crossbody", "TOILETRY KIT": "Toiletry Kit Bag", "WALLETS": "Wallet",
+          "VANITY CASE AND POUCH": "pouch", "KIDS BAG": "Kids Bag", "MATERNITY BAG": "Maternity Bag",
+          "LAPTOP OVERNIGHTER": "Laptop Overnighter", "LAPTOP BACKPACK": "Laptop Backpack",
+          "EXECUTIVE BAGS": "Executive Bag", "BACKPACK WITH TROLLEY": "Backpack With Strolly",
+          "ROSHAN ELITE BACKPACK": "Elite Backpack"
+        };
+        const KGS_SUB_CATEGORIES = ["HARD", "SOFT", "KIDS LUGGAGE", "DUFFLE TROLLEY"];
+        const LITERS_SUB_CATEGORIES = [
+          "SCHOOL", "COLLEGE", "MESSENGER BAGS", "SCHOOL BAG WITH TROLLEY", "DUFFLE BAGS", 
+          "GYM BAG", "LAPTOP BACKPACK", "RUCKSACK", "KIDS BAG", "EXECUTIVE BAGS", 
+          "MATERNITY BAG", "BACKPACK WITH TROLLEY", "LAPTOP OVERNIGHTER", "ROSHAN ELITE BACKPACK"
+        ];
+
+        const roundPriceUp = (price) => Math.ceil(price / 500) * 500;
+
+        const incrementSku = (lastSku) => {
+          if (!lastSku) return "BAG1000"; 
+          const basePart = lastSku.split('-')[0];
+          const match = basePart.match(/^([a-zA-Z]+)(\d+)$/);
+          if (match) {
+            const prefix = match[1];
+            const number = parseInt(match[2], 10);
+            return `${prefix}${number + 1}`;
+          }
+          return basePart + "_NEXT";
+        };
+
+        const calculateVariantSKUs = (baseSku, variants, subCat1) => {
+          const skuMap = {};
+          const colors = Array.from(new Set(variants.map(v => v.color)));
+          const isMultiColor = colors.length > 1;
+          
+          if (subCat1 === "SET OF 3 COMBOS") {
+            let currentComboSku = baseSku;
+            variants.forEach((v, idx) => {
+              if (idx === 0) skuMap[v.id] = currentComboSku;
+              else {
+                currentComboSku = incrementSku(currentComboSku);
+                skuMap[v.id] = currentComboSku;
+              }
+            });
+            return skuMap;
+          }
+
+          let currentBaseSku = baseSku;
+          if (isMultiColor) {
+            colors.forEach((color, cIdx) => {
+              if (cIdx > 0) currentBaseSku = incrementSku(currentBaseSku);
+              const colorVariants = variants.filter(v => v.color === color);
+              colorVariants.forEach((v, vIdx) => {
+                if (vIdx === 0) skuMap[v.id] = currentBaseSku;
+                else skuMap[v.id] = `${currentBaseSku}-${vIdx}`;
+              });
+            });
+          } else {
+            variants.forEach((v, vIdx) => {
+              if (vIdx === 0) skuMap[v.id] = baseSku;
+              else skuMap[v.id] = `${baseSku}-${vIdx}`;
+            });
+          }
+          return skuMap;
+        };
+
+        const getSubCategory1List = (rules) => Array.from(new Set(rules.map(r => r.subCategory1))).sort();
+        const getSubCategory2List = (rules, selectedSubCat1) => {
+          const rule = rules.find(r => r.subCategory1 === selectedSubCat1);
+          return rule ? rule.subCategory2 : [];
+        };
+        const determineMainCategory = (rules, subCat1) => {
+          const rule = rules.find(r => r.subCategory1 === subCat1);
+          return rule ? rule.mainCategory : "";
+        };
+
+        const calculateVolume = (l, w, h, subCat1) => {
+          if (!l || !w || !h) return "";
+          if (KGS_SUB_CATEGORIES.includes(subCat1) || subCat1 === "SET OF 3 COMBOS") {
+            if (h <= 63) return "10 KGS"; 
+            if (h >= 64 && h <= 73) return "20 KGS";
+            if (h >= 74) return "30 KGS";
+            return "10 KGS"; 
+          } else if (LITERS_SUB_CATEGORIES.includes(subCat1)) {
+            return `${Math.round((l * w * h) / 1000)} L`; 
+          }
+          return `${Math.round((l * w * h) / 1000)} L`;
+        };
+
+        const generateKeywords = (master, variant, offerPrice) => {
+          const priceBelow = roundPriceUp(offerPrice);
+          const displaySubCat = SUB_CATEGORY_DISPLAY_MAP[master.subCategory1] || master.subCategory1;
+          let baseKeywords = "";
+          if (master.mainCategory.includes("SCHOOL") || master.subCategory1.includes("COLLEGE")) {
+            baseKeywords = "School Bag For Boy,School Bag For Girl,School Bag For Adult,Unisex School Bag,Colour Full Schoolbag,Water Resistant School Bag,Good Quality School Bag,College Bag,College Backpack,College Backpack For Men,College Backpack For Women,Unisex College Backpack,Spacious Backpack";
+          } else if (master.mainCategory.includes("LUGGAGE")) {
+            baseKeywords = "Lightweight Luggage,Durable Travel Luggage,Spinners And Wheeled Luggage,Cabin Size Luggage,Medium Size Luggage,Large Size Luggage,Checked Luggage,Carry-On Luggage,10 Kgs,20 Kgs,30 Kgs,Soft Luggage For Travel";
+          } else if (master.mainCategory.includes("PROFESSIONALS") || master.subCategory1.includes("LAPTOP")) {
+            baseKeywords = "Laptop bags,College Bag,College backpack For Men,College backpack For Women,Womens College Backpack,Travel bags,Soft sided travel bags";
+          } else {
+            baseKeywords = `${displaySubCat}, ${master.mainCategory} bag, Travel Bag, Casual Bag`;
+          }
+          return `${baseKeywords},${master.brandName} ${displaySubCat},${variant.color} Color, Below ${priceBelow}`;
+        };
+
+        const generateTitle = (master, variant, calculatedVolume) => {
+          const parts = [];
+          if (master.brandName) parts.push(master.brandName);
+          if (master.productName) parts.push(master.productName);
+          const mappedSubCat = SUB_CATEGORY_DISPLAY_MAP[master.subCategory1];
+          if (mappedSubCat) parts.push(mappedSubCat);
+          else if (master.subCategory1) parts.push(master.subCategory1);
+          
+          if (master.subCategory1 === "SET OF 3 COMBOS") parts.push("Set of 3 Pcs"); 
+          else if (KGS_SUB_CATEGORIES.includes(master.subCategory1)) {
+            if (variant.height) parts.push(`${variant.height} Cm`);
+          } else if (LITERS_SUB_CATEGORIES.includes(master.subCategory1)) {
+            if (calculatedVolume && calculatedVolume.includes("L")) parts.push(calculatedVolume);
+          }
+          if (variant.color) parts.push(variant.color);
+          return parts.filter(Boolean).join(" ");
+        };
+
+        const generateDescription = (master, variant, calculatedVolume) => {
+          const parts = [`Brand Name-${master.brandName}`];
+          if (master.productName) parts.push(`Model-${master.productName}`);
+          parts.push(`Material-${master.material}`);
+          parts.push(`Color-${variant.color}`);
+          if (master.subCategory1 === "SET OF 3 COMBOS" && variant.comboString) parts.push(variant.comboString);
+          const specs = parts.join(",");
+          const attr = master.descriptionAttributes;
+          const bullets = Object.values(attr).filter(val => val && val.trim() !== "").join("<Br>");
+          return { desc: specs, bullets };
+        };
+
+        const processVariant = (master, variant, index, calculatedSku) => {
+          const volume = calculateVolume(variant.length, variant.width, variant.height, master.subCategory1);
+          const generated = generateDescription(master, variant, volume);
+          const title = generateTitle(master, variant, volume);
+          const keywords = generateKeywords(master, variant, variant.offerPrice);
+          let weightClass = "";
+          if (variant.height < 59) weightClass = "Small";
+          else if (variant.height >= 64 && variant.height < 73) weightClass = "Medium";
+          else if (variant.height >= 74) weightClass = "Large";
+
+          return {
+            ...variant, volume, weightClass, sku: calculatedSku,
+            title, description: generated.desc, bulletPoints: generated.bullets, keywords
+          };
+        };
+
+        const generateProductRows = (products) => {
+          let allRows = [];
+          products.forEach(prod => {
+            const { master, variants } = prod;
+            const colors = Array.from(new Set(variants.map(v => v.color)));
+            const sizes = Array.from(new Set(variants.map(v => v.size)));
+            const isNoSize = sizes.length === 1 && sizes[0] === "No Size";
+            const isMultiColor = colors.length > 1;
+            const isCombo = master.subCategory1 === "SET OF 3 COMBOS";
+            
+            const variantsByColor = {};
+            colors.forEach(c => { variantsByColor[c] = variants.filter(v => v.color === c); });
+
+            Object.keys(variantsByColor).forEach(color => {
+              const colorGroup = variantsByColor[color];
+              colorGroup.forEach((row, index) => {
+                const isFirstInGroup = index === 0;
+                let variationType = "Parent only";
+                let variationTheme = "";
+                let parentSku = "";
+
+                if (isCombo) {
+                  variationTheme = "Color name";
+                  if (prod.variants.indexOf(row) === 0) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                  else { variationType = "Variant"; parentSku = prod.variants[0].sku; }
+                } else if (isNoSize) {
+                  if (isMultiColor) {
+                    variationTheme = "Color name";
+                    if (prod.variants.indexOf(row) === 0) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                    else { variationType = "Variant"; parentSku = prod.variants[0].sku; }
+                  }
+                } else {
+                  if (isMultiColor) {
+                     variationTheme = "Size name + color name";
+                     if (isFirstInGroup) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                     else { variationType = "Variant"; parentSku = colorGroup[0].sku; }
+                  } else {
+                     variationTheme = "Size name";
+                     if (isFirstInGroup) { variationType = "Parent with variant/s"; parentSku = row.sku; }
+                     else { variationType = "Variant"; parentSku = colorGroup[0].sku; }
+                  }
+                }
+                
+                let excelSizeName = row.size;
+                if (isNoSize || isCombo) excelSizeName = "";
+
+                allRows.push({
+                  SKU: row.sku, Material_category: master.mainCategory, Sub_category_level_1: master.subCategory1,
+                  Sub_category_level_2: master.subCategory2, HSN_code: master.hsnCode, Seller_SKU: "", 
+                  Brand_name: master.brandName, Product_ID: "", Item_name_title: row.title, Model_number: "", 
+                  Manufacturer: master.brandName, Product_description: row.description, Product_bullet_points: row.bulletPoints,
+                  Power_source_type: "", Included_components: "1", Manufacturer_contact_details: "",
+                  Item_type_name: "Unit", Number_of_packages: 1, Unit_count_per_product: 1, Unit_count_type: "Unit",
+                  Item_length: row.length, Item_length_unit_of_measure: "Cm", Item_width: row.width, Item_width_unit_of_measure: "Cm",
+                  Item_height: row.height, Item_height_unit_of_measure: "Cm", Country_of_origin: "India", Your_selling_price: row.offerPrice,
+                  Condition_type: "New", Currency: "INR", Maximum_retail_price: row.mrp, Sustainable_green_material_check: "",
+                  Manufacturer_warranty_description: master.warrantyType, Display_image_URL: "", Other_images_URL: "",
+                  Variation_theme: variationTheme, Variation_type: variationType, Parent_SKU: parentSku, Item_imported: "",
+                  Importer_contact: "", Manufacturer_part_number: "", Update_delete: "", Intended_product_use_with: "",
+                  Model_year: "", Search_keywords: row.keywords, Color_names: row.color, Pattern_name: "", Size_name: excelSizeName, 
+                  Primary_material_type: master.material, Finish_type: master.material, Plug_type: "", Special_features: "",
+                  Item_weight: "", Item_weight_unit_of_measure: "", Shipping_weight: "", Shipping_weight_unit_of_measure: "",
+                  Item_volume: row.volume, Item_volume_unit_of_measure: "", Are_batteries_included: "No", Is_the_product_a_battery_itself: "",
+                  Battery_type: "", Battery_weight: "", Battery_weight_unit_of_measure: "", Voltage: "", Safety_warning: "",
+                  Legal_disclaimer: "", Product_tax_code: master.taxType, Maximum_order_ship_quantity: "", Sale_price: 0,
+                  Sale_start_date: "", Sale_end_date: "", Fulfilment_latency: 1, Release_date: "", Stop_selling_date: "",
+                  Max_order_quantity: 1, Is_product_expirable: "No", Commission_percent: "", Return_and_refund: "",
+                  Warranty_term: master.warrantyType, Inventory_Qty: row.stockQty
+                });
+              });
+            });
+          });
+          return allRows.sort((a, b) => {
+             const nA = (a.SKU.match(/(\d+)/) || [0])[0];
+             const nB = (b.SKU.match(/(\d+)/) || [0])[0];
+             return parseInt(nA) - parseInt(nB);
+          });
+        };
+
+        const generateExcelForProducts = (products) => {
+          const exportData = generateProductRows(products);
+          const ws = XLSX.utils.json_to_sheet(exportData, { header: EXCEL_COLUMNS });
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, "Stock_Entry");
+          XLSX.writeFile(wb, `Stock_Export_${new Date().toISOString().slice(0,10)}.xlsx`);
+        };
+
+        const prepareDataForGoogleSheet = (products) => {
+          const data = generateProductRows(products);
+          return data.map(row => EXCEL_COLUMNS.map(col => row[col] === undefined || row[col] === null ? "" : row[col]));
+        };
+
+        // ==========================================
+        // 3. UI COMPONENTS
+        // ==========================================
+
+        const MultiSelectAttribute = ({ value, onChange, options }) => {
+          const [isOpen, setIsOpen] = useState(false);
+          const [search, setSearch] = useState("");
+          const dropdownRef = useRef(null);
+          const selectedItems = useMemo(() => value ? value.split(',').map(s => s.trim()).filter(Boolean) : [], [value]);
+
+          useEffect(() => {
+            const handleClickOutside = (event) => {
+              if (dropdownRef.current && !dropdownRef.current.contains(event.target)) setIsOpen(false);
+            };
+            document.addEventListener("mousedown", handleClickOutside);
+            return () => document.removeEventListener("mousedown", handleClickOutside);
+          }, []);
+
+          const toggleItem = (item) => {
+            let newItems;
+            if (selectedItems.includes(item)) newItems = selectedItems.filter(i => i !== item);
+            else newItems = [...selectedItems, item];
+            onChange(newItems.join(', '));
+          };
+
+          const addCustom = () => {
+            if (search && !selectedItems.includes(search)) {
+              onChange([...selectedItems, search].join(', '));
+              setSearch("");
+            }
+          };
+
+          return (
+            <div className="w-full relative" ref={dropdownRef}>
+              <div className="flex flex-wrap gap-1.5 mb-2 min-h-[32px]">
+                {selectedItems.map((item, idx) => (
+                  <span key={idx} className="bg-blue-50 text-blue-700 text-[10px] px-2 py-1 rounded border border-blue-100 flex items-center gap-1">
+                    {item} <button onClick={() => toggleItem(item)} className="hover:text-red-500"><X size={12}/></button>
+                  </span>
+                ))}
+              </div>
+              <div className="relative">
+                <input value={search} onChange={(e) => { setSearch(e.target.value); setIsOpen(true); }} onFocus={() => setIsOpen(true)} className="w-full p-2 text-xs bg-white text-black border rounded focus:ring-2 ring-blue-100 outline-none" placeholder="Select features or type to add..." />
+                <ChevronDown size={14} className="absolute right-2 top-2.5 text-gray-400 pointer-events-none"/>
+              </div>
+              {isOpen && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-48 overflow-y-auto">
+                   {search && !options.some(o => o.toLowerCase() === search.toLowerCase()) && (
+                     <button onClick={addCustom} className="w-full text-left px-3 py-2 text-xs font-bold text-blue-600 hover:bg-blue-50 flex items-center gap-1"><Plus size={12}/> Add "{search}"</button>
+                   )}
+                   {options.filter(o => o.toLowerCase().includes(search.toLowerCase())).map((opt, i) => (
+                     <div key={i} onClick={() => toggleItem(opt)} className={`px-3 py-2 text-xs cursor-pointer hover:bg-gray-50 flex items-center justify-between ${selectedItems.includes(opt) ? 'bg-blue-50/50 text-blue-800 font-medium' : 'text-gray-700'}`}>
+                        <span>{opt}</span>{selectedItems.includes(opt) && <Check size={12}/>}
+                     </div>
+                   ))}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        const WarrantySelector = ({ value, onChange }) => {
+          const isInternational = value.toLowerCase().includes("international");
+          const baseValue = value.replace(/ international/i, "").replace(/ warranty/i, " warranty"); 
+          const selectedOption = WARRANTY_OPTIONS.find(opt => opt.toLowerCase() === baseValue.toLowerCase()) || "No warranty";
+          return (
+            <div className="flex items-center gap-2">
+              <select value={selectedOption} onChange={(e) => { const v = e.target.value; onChange(isInternational && v !== 'No warranty' ? v.replace("warranty", "International warranty") : v); }} className="flex-1 border border-gray-300 rounded-lg p-3 text-sm bg-white text-black focus:ring-2 ring-blue-500 outline-none">
+                {WARRANTY_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              <label className={`flex items-center gap-1.5 cursor-pointer select-none px-2 py-1 rounded ${selectedOption === 'No warranty' ? 'opacity-50 pointer-events-none' : 'hover:bg-gray-50'}`}>
+                <input type="checkbox" checked={isInternational} onChange={(e) => onChange(e.target.checked ? selectedOption.replace("warranty", "International warranty") : selectedOption)} disabled={selectedOption === "No warranty"} className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500" />
+                <span className="text-xs font-bold text-gray-700">International</span>
+              </label>
+            </div>
+          );
+        };
+
+        const LocationEditModal = ({ item, currentLoc, onClose, onSave, isSaving }) => {
+          const [locString, setLocString] = useState(currentLoc === "Unassigned" ? "" : currentLoc);
+          return (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+               <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md animate-in fade-in zoom-in-95">
+                  <h3 className="text-lg font-bold text-gray-900 mb-2">Edit Location</h3>
+                  <div className="mb-4 text-sm text-gray-500">Item: <span className="font-mono font-bold text-gray-800">{item.sku}</span></div>
+                  <label className="block text-xs font-bold uppercase text-gray-500 mb-1">Rack / Shelf IDs</label>
+                  <input value={locString} onChange={e => setLocString(e.target.value)} className="w-full border border-gray-300 rounded-lg p-3 text-black mb-2 focus:border-blue-500 outline-none" placeholder="e.g. A3-1, B2-1" />
+                  <p className="text-[10px] text-gray-400 mb-6">Format: [Rack][Shelf]-[Qty]. Example: <b>A3-1, B2-2</b></p>
+                  <div className="flex justify-end gap-2">
+                     <button onClick={onClose} className="px-4 py-2 text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 font-medium text-sm">Cancel</button>
+                     <button onClick={() => onSave(locString)} disabled={isSaving} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold text-sm flex items-center gap-2">
+                       {isSaving ? <RefreshCw size={14} className="animate-spin"/> : <Save size={14}/>} Update
+                     </button>
+                  </div>
+               </div>
+            </div>
+          );
+        };
+        
+        const BarcodeManagerModal = ({ item, onClose, onSave, isSaving }) => {
+          const parseBarcodes = (str) => {
+            if (!str) return [];
+            return str.split(',').map(s => {
+              const parts = s.trim().split('-');
+              if (parts.length > 1) {
+                const qty = parseInt(parts[parts.length - 1]);
+                if (!isNaN(qty)) {
+                   return { code: parts.slice(0, parts.length - 1).join('-'), qty };
+                }
+              }
+              return { code: s.trim(), qty: 1 };
+            }).filter(r => r.code);
+          };
+
+          const [rows, setRows] = useState(parseBarcodes(item.barcodes || ""));
+          const [newCode, setNewCode] = useState("");
+          const [newQty, setNewQty] = useState(1);
+
+          const addRow = () => {
+            if (!newCode.trim()) return;
+            setRows([...rows, { code: newCode.trim(), qty: newQty }]);
+            setNewCode("");
+            setNewQty(1);
+          };
+
+          const removeRow = (idx) => {
+            setRows(rows.filter((_, i) => i !== idx));
+          };
+
+          const handleSave = () => {
+            const str = rows.map(r => `${r.code}-${r.qty}`).join(', ');
+            onSave(str);
+          };
+
+          return (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+               <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-lg animate-in fade-in zoom-in-95 flex flex-col max-h-[90vh]">
+                  <div className="flex justify-between items-start mb-4">
+                     <div>
+                        <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2"><ScanBarcode size={20}/> Manage Barcodes</h3>
+                        <div className="text-xs text-gray-500 mt-1">Assign multiple barcodes to <span className="font-mono font-bold text-gray-800">{item.sku}</span></div>
+                     </div>
+                     <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-black"/></button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto mb-4 bg-gray-50 rounded-lg border border-gray-200 p-2">
+                     <table className="w-full text-sm">
+                        <thead>
+                           <tr className="text-left text-gray-500 text-xs uppercase border-b border-gray-200">
+                              <th className="pb-2 pl-2">Barcode</th>
+                              <th className="pb-2 w-20 text-center">Qty</th>
+                              <th className="pb-2 w-10"></th>
+                           </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                           {rows.map((row, idx) => (
+                              <tr key={idx} className="group hover:bg-white">
+                                 <td className="py-2 pl-2 font-mono font-bold text-slate-700">{row.code}</td>
+                                 <td className="py-2 text-center text-slate-600 font-medium">{row.qty}</td>
+                                 <td className="py-2 text-center">
+                                    <button onClick={() => removeRow(idx)} className="text-red-300 hover:text-red-500"><Trash2 size={14}/></button>
+                                 </td>
+                              </tr>
+                           ))}
+                           {rows.length === 0 && <tr><td colSpan={3} className="py-4 text-center text-gray-400 italic text-xs">No barcodes assigned</td></tr>}
+                        </tbody>
+                     </table>
+                  </div>
+
+                  <div className="bg-blue-50 p-3 rounded-lg border border-blue-100 mb-4">
+                     <div className="flex gap-2 items-end">
+                        <div className="flex-1">
+                           <label className="block text-[10px] font-bold text-blue-800 uppercase mb-1">New Barcode</label>
+                           <input 
+                              value={newCode} 
+                              onChange={e => setNewCode(e.target.value)} 
+                              onKeyDown={e => e.key === 'Enter' && addRow()}
+                              className="w-full border border-blue-200 rounded p-2 text-sm focus:ring-2 ring-blue-400 outline-none" 
+                              placeholder="Scan or type..."
+                           />
+                        </div>
+                        <div className="w-20">
+                           <label className="block text-[10px] font-bold text-blue-800 uppercase mb-1">Qty</label>
+                           <input 
+                              type="number" 
+                              min="1"
+                              value={newQty} 
+                              onChange={e => setNewQty(parseInt(e.target.value) || 1)} 
+                              onKeyDown={e => e.key === 'Enter' && addRow()}
+                              className="w-full border border-blue-200 rounded p-2 text-sm text-center focus:ring-2 ring-blue-400 outline-none" 
+                           />
+                        </div>
+                        <button onClick={addRow} className="bg-blue-600 hover:bg-blue-700 text-white p-2 rounded transition-colors"><Plus size={20}/></button>
+                     </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+                     <button onClick={onClose} className="px-4 py-2 text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 font-medium text-sm">Cancel</button>
+                     <button onClick={handleSave} disabled={isSaving} className="px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-700 font-bold text-sm flex items-center gap-2">
+                       {isSaving ? <RefreshCw size={14} className="animate-spin"/> : <Save size={14}/>} Save Changes
+                     </button>
+                  </div>
+               </div>
+            </div>
+          );
+        };
+
+        const AisleConfigModal = ({ currentLayout, onClose, onSave }) => {
+           const [layout, setLayout] = useState(currentLayout);
+           const [newGroupText, setNewGroupText] = useState("");
+           const addGroup = () => { setLayout([...layout, { id: Date.now().toString(), name: newGroupText || `Row ${layout.length + 1}`, boxes: [] }]); setNewGroupText(""); };
+           const removeGroup = (idx) => setLayout(layout.filter((_, i) => i !== idx));
+           const moveGroup = (idx, dir) => {
+              if ((dir === 'up' && idx === 0) || (dir === 'down' && idx === layout.length - 1)) return;
+              const newL = [...layout]; const temp = newL[idx]; newL[idx] = newL[idx + (dir === 'up' ? -1 : 1)]; newL[idx + (dir === 'up' ? -1 : 1)] = temp; setLayout(newL);
+           };
+           const addBoxToGroup = (id) => setLayout(layout.map(g => g.id === id ? { ...g, boxes: [...g.boxes, `Box${Math.floor(Math.random()*1000)}`] } : g));
+           const updateBoxId = (gid, bidx, val) => setLayout(layout.map(g => g.id === gid ? { ...g, boxes: g.boxes.map((b, i) => i === bidx ? val : b) } : g));
+           const removeBox = (gid, bidx) => setLayout(layout.map(g => g.id === gid ? { ...g, boxes: g.boxes.filter((_, i) => i !== bidx) } : g));
+
+           return (
+              <div className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                 <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+                    <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl"><h3 className="font-bold text-lg">Configure Aisle Layout</h3><button onClick={onClose}><X size={20}/></button></div>
+                    <div className="p-4 flex-1 overflow-y-auto space-y-4 bg-slate-50">
+                       {layout.map((group, gIdx) => (
+                          <div key={group.id} className="bg-white p-3 rounded-lg border border-gray-200 shadow-sm">
+                             <div className="flex justify-between items-center mb-2 border-b pb-2">
+                                <div className="flex items-center gap-2 flex-1">
+                                  <div className="flex flex-col gap-0.5 mr-2"><button onClick={() => moveGroup(gIdx, 'up')} disabled={gIdx === 0}><ArrowUp size={12}/></button><button onClick={() => moveGroup(gIdx, 'down')} disabled={gIdx === layout.length-1}><ArrowDown size={12}/></button></div>
+                                  <input value={group.name} onChange={e => setLayout(layout.map((g, i) => i === gIdx ? { ...g, name: e.target.value } : g))} className="font-bold text-sm text-gray-800 outline-none w-full"/>
+                                </div>
+                                <div className="flex gap-2"><button onClick={() => addBoxToGroup(group.id)} className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded font-bold">+ Box</button><button onClick={() => removeGroup(gIdx)} className="text-gray-400 hover:text-red-500"><Trash2 size={14}/></button></div>
+                             </div>
+                             <div className="flex flex-wrap gap-2">
+                                {group.boxes.map((box, bIdx) => (<div key={bIdx} className="flex items-center bg-gray-50 border rounded px-2 py-1"><input value={box} onChange={e => updateBoxId(group.id, bIdx, e.target.value)} className="w-16 text-xs bg-transparent outline-none font-mono"/><button onClick={() => removeBox(group.id, bIdx)} className="ml-1 text-gray-400 hover:text-red-500"><X size={10}/></button></div>))}
+                             </div>
+                          </div>
+                       ))}
+                       <div className="flex gap-2"><input value={newGroupText} onChange={e => setNewGroupText(e.target.value)} placeholder="New Row Name..." className="flex-1 border rounded px-3 py-2 text-sm text-black"/><button onClick={addGroup} className="bg-slate-800 text-white px-4 rounded text-sm font-bold">Add Row</button></div>
+                    </div>
+                    <div className="p-4 border-t flex justify-end gap-2 bg-white"><button onClick={onClose} className="px-4 py-2 border rounded text-sm font-bold text-gray-600">Cancel</button><button onClick={() => onSave(layout)} className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-bold">Save Layout</button></div>
+                 </div>
+              </div>
+           )
+        };
+
+        const ShelfDetailModal = ({ 
+          context, 
+          items, 
+          allItems,
+          searchQuery,
+          isProcessing,
+          onClose, 
+          onAddLocation,
+          onRemoveLocation,
+          onUpdateQty,
+          onManageBarcodes
+        }) => {
+          const [search, setSearch] = useState("");
+          const [isAdding, setIsAdding] = useState(false);
+
+          const searchResults = useMemo(() => {
+            if (!search || search.length < 2) return [];
+            const lower = search.toLowerCase();
+            return allItems.filter(i => 
+              String(i.sku).toLowerCase().includes(lower) || 
+              String(i.name).toLowerCase().includes(lower) ||
+              (i.barcodes && i.barcodes.toLowerCase().includes(lower))
+            ).slice(10);
+          }, [search, allItems]);
+
+          const displayTitle = context.type === 'Rack' ? `Rack ${context.rackId} - Shelf ${context.shelfId}` : `Aisle Box ${context.shelfId}`;
+          const displayLocId = context.type === 'Rack' ? `${context.rackId}${context.shelfId}` : context.shelfId;
+
+          return (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+               <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl max-h-[85vh] flex flex-col relative">
+                  {isProcessing && (
+                    <div className="absolute inset-0 bg-white/50 z-50 flex items-center justify-center rounded-xl">
+                       <div className="bg-black text-white px-4 py-2 rounded-lg flex items-center gap-2 shadow-lg font-bold">
+                          <RefreshCw size={18} className="animate-spin"/> Saving...
+                       </div>
+                    </div>
+                  )}
+
+                  <div className="p-4 border-b bg-slate-50 rounded-t-xl">
+                     <div className="flex justify-between items-center mb-2">
+                       <h3 className="font-bold text-lg flex items-center gap-2 text-slate-800">
+                          {context.type === 'Rack' ? <Layers size={20} className="text-blue-600"/> : <Box size={20} className="text-orange-600"/>} 
+                          {displayTitle}
+                       </h3>
+                       <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-black"/></button>
+                     </div>
+                     <p className="text-xs text-gray-500">Manage items in this location ({displayLocId})</p>
+                  </div>
+
+                  <div className="p-4 border-b bg-white shadow-sm z-10">
+                     {!isAdding ? (
+                        <button onClick={() => setIsAdding(true)} className="w-full py-3 bg-blue-50 text-blue-700 rounded-lg border border-blue-200 text-sm font-bold hover:bg-blue-100 transition-colors flex items-center justify-center gap-2">
+                           <Plus size={18}/> Add Item Here
+                        </button>
+                     ) : (
+                        <div className="relative">
+                           <div className="flex items-center gap-2 mb-2">
+                              <Search size={16} className="text-gray-400"/>
+                              <input 
+                                autoFocus
+                                value={search}
+                                onChange={e => setSearch(e.target.value)}
+                                className="flex-1 text-sm outline-none border-b border-blue-500 py-1"
+                                placeholder="Search SKU or Scan Barcode..."
+                              />
+                              <button onClick={() => { setIsAdding(false); setSearch(""); }} className="text-xs text-gray-400 hover:text-red-500">Cancel</button>
+                           </div>
+                           {search && (
+                             <div className="absolute top-full left-0 right-0 bg-white border shadow-xl rounded-lg max-h-48 overflow-y-auto mt-1 z-20">
+                                {searchResults.length === 0 ? <div className="p-3 text-xs text-gray-400">No items found</div> : 
+                                  searchResults.map(res => (
+                                     <div key={res.sku} onClick={() => { onAddLocation(res, displayLocId); setSearch(""); setIsAdding(false); }} className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0">
+                                        <div className="font-bold text-sm text-blue-700">{res.sku}</div>
+                                        <div className="text-xs text-gray-600 truncate">{res.name}</div>
+                                        {res.barcodes && <div className="text-[10px] text-gray-400 mt-0.5 truncate">{res.barcodes}</div>}
+                                     </div>
+                                  ))
+                                }
+                             </div>
+                           )}
+                        </div>
+                     )}
+                  </div>
+
+                  <div className="p-4 overflow-y-auto flex-1 space-y-3 bg-gray-50">
+                     {items.length === 0 && <div className="text-center text-gray-400 py-8 italic">This location is empty</div>}
+                     {items.map((item, idx) => {
+                       const isHighlighted = searchQuery && (
+                         String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || 
+                         String(item.name).toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         (item.barcodes && item.barcodes.toLowerCase().includes(searchQuery.toLowerCase()))
+                       );
+                       
+                       let qtyNum = 1;
+                       if (item.qtyAtLocation) {
+                         const match = item.qtyAtLocation.match(/(\d+)/);
+                         if (match) qtyNum = parseInt(match[0]);
+                       }
+
+                       return (
+                       <div key={idx} className={`flex justify-between items-start p-3 border rounded-lg shadow-sm transition-colors group ${isHighlighted ? 'bg-yellow-50 border-yellow-300 ring-2 ring-yellow-200' : 'bg-white border-gray-200 hover:border-blue-300'}`}>
+                          <div className="flex-1 mr-3">
+                             <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-sm text-blue-700">{item.sku}</span>
+                             </div>
+                             <div className="text-xs text-gray-600 mt-1 line-clamp-2">{item.name}</div>
+                             <div className="text-[11px] font-bold text-gray-400 mt-1">MRP: ₹{item.mrp}</div>
+                             {/* Barcode Display */}
+                             {item.barcodes && (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                   {item.barcodes.split(',').map((b, i) => (
+                                      <span key={i} className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${searchQuery && b.toLowerCase().includes(searchQuery.toLowerCase()) ? 'bg-yellow-200 border-yellow-400 text-yellow-900' : 'bg-gray-100 border-gray-200 text-gray-600'}`}>
+                                         {b.trim()}
+                                      </span>
+                                   ))}
+                                </div>
+                             )}
+                          </div>
+                          
+                          <div className="flex flex-col items-end gap-2">
+                             <div className="flex items-center bg-white rounded-lg border border-gray-300 overflow-hidden shadow-sm h-9">
+                                <button onClick={() => onUpdateQty(item, displayLocId, -1)} className="w-8 h-full flex items-center justify-center hover:bg-red-50 text-gray-600 active:bg-gray-200 border-r border-gray-200"><Minus size={16}/></button>
+                                <span className="w-10 h-full flex items-center justify-center text-sm font-bold bg-white text-gray-800">{qtyNum}</span>
+                                <button onClick={() => onUpdateQty(item, displayLocId, 1)} className="w-8 h-full flex items-center justify-center hover:bg-blue-50 text-blue-600 active:bg-blue-100 border-l border-gray-200"><Plus size={16}/></button>
+                             </div>
+
+                             <div className="flex gap-1">
+                                <button onClick={() => onManageBarcodes(item)} className="p-1.5 bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-800 rounded border border-gray-200" title="Manage Barcodes">
+                                   <ScanBarcode size={16}/>
+                                </button>
+                                <button onClick={() => { if(confirm(`Remove ${item.sku} from ${displayTitle}?`)) onRemoveLocation(item, displayLocId); }} className="p-1.5 bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 rounded border border-red-100" title="Remove Item">
+                                   <Trash2 size={16}/>
+                                </button>
+                             </div>
+                          </div>
+                       </div>
+                     )})}
+                  </div>
+               </div>
+            </div>
+          );
+        };
+
+        const WarehouseVisualizer = ({ 
+          inventory, 
+          searchQuery, 
+          aisleLayout,
+          onLocationClick,
+          onConfigAisle
+        }) => {
+          
+          const shelfMap = useMemo(() => {
+            const map = {};
+            inventory.forEach(rack => {
+               const rackId = rack.id.replace("Rack ", "").trim();
+               if (!map[rackId]) map[rackId] = {};
+               rack.subLocations.forEach(shelf => {
+                  const shelfId = shelf.id.replace("Shelf ", "").trim();
+                  map[rackId][shelfId] = shelf.items;
+               });
+            });
+            return map;
+          }, [inventory]);
+
+          const [expandedGroups, setExpandedGroups] = useState(aisleLayout.map(g => g.id)); 
+
+          const toggleGroup = (id) => {
+             if (expandedGroups.includes(id)) setExpandedGroups(prev => prev.filter(g => g !== id));
+             else setExpandedGroups(prev => [...prev, id]);
+          };
+
+          const renderRack = (rackId) => {
+            return (
+              <div className="bg-white border border-gray-300 rounded-lg overflow-hidden shadow-sm flex flex-col w-40 h-40">
+                 <div className="bg-slate-800 text-white text-center py-1 font-bold text-xs uppercase tracking-wider">Rack {rackId}</div>
+                 <div className="flex flex-col p-1 gap-0.5 bg-gray-100 flex-1">
+                    {SHELF_LEVELS.map(shelfId => {
+                      const items = shelfMap[rackId]?.[shelfId] || [];
+                      const count = items.length;
+                      const hasMatch = searchQuery && items.some(item => 
+                        String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || 
+                        String(item.name).toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        (item.barcodes && item.barcodes.toLowerCase().includes(searchQuery.toLowerCase()))
+                      );
+                      let bgClass = "bg-white";
+                      let borderClass = "border-gray-200";
+                      if (count > 0) { bgClass = "bg-blue-100"; borderClass = "border-blue-200"; }
+                      if (hasMatch) { bgClass = "bg-yellow-300 animate-pulse"; borderClass = "border-yellow-500"; }
+                      if (shelfId === '0') borderClass += " border-dashed";
+                      
+                      return (
+                        <div 
+                          key={shelfId} 
+                          onClick={() => onLocationClick(items, { type: 'Rack', rackId, shelfId, fullId: `${rackId}${shelfId}` })} 
+                          className={`flex-1 min-h-0 rounded border ${bgClass} ${borderClass} flex items-center justify-center cursor-pointer hover:opacity-80 relative group text-[9px] font-medium text-gray-600`} 
+                          title={`Shelf ${shelfId}: ${count} items`}
+                        >
+                           {shelfId === '0' ? 'TOP' : shelfId}
+                           {count > 0 && <span className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-red-600 text-white text-xs font-bold rounded-full flex items-center justify-center border-2 border-white shadow-md z-10">{count}</span>}
+                        </div>
+                      );
+                    })}
+                 </div>
+              </div>
+            );
+          };
+
+          const renderAisle = () => {
+             return (
+                <div className="flex-1 w-full bg-slate-100 rounded-lg border-l-2 border-r-2 border-dashed border-slate-300 p-2 flex flex-col gap-2 overflow-y-auto relative">
+                   <div className="flex justify-between items-center mb-1">
+                      <div className="text-[10px] text-center font-bold text-slate-400 uppercase tracking-widest flex-1">Walking Aisle</div>
+                      <button onClick={onConfigAisle} className="text-slate-400 hover:text-slate-600"><Settings2 size={12}/></button>
+                   </div>
+                   
+                   <div className="space-y-2">
+                     {aisleLayout.map(group => {
+                       const isExpanded = expandedGroups.includes(group.id);
+                       return (
+                         <div key={group.id} className="border border-slate-200 rounded bg-white shadow-sm overflow-hidden">
+                            <div onClick={() => toggleGroup(group.id)} className="bg-slate-50 px-2 py-1 flex justify-between items-center cursor-pointer hover:bg-slate-100">
+                               <span className="text-[10px] font-bold text-slate-600 uppercase">{group.name}</span>
+                               <ChevronDown size={10} className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}/>
+                            </div>
+                            {isExpanded && (
+                              <div className="p-1.5 grid grid-cols-2 gap-1.5 bg-slate-50/50">
+                                 {group.boxes.map(boxId => {
+                                    let items = [];
+                                    // Logic: find by Box ID in various locations
+                                    const bNum = boxId.replace("Box", "");
+                                    if (shelfMap["BOX"] && shelfMap["BOX"][bNum]) items = shelfMap["BOX"][bNum];
+                                    if (!items.length && shelfMap[boxId] && shelfMap[boxId]["Main"]) items = shelfMap[boxId]["Main"];
+                                    if (!items.length && shelfMap["General"] && shelfMap["General"][boxId]) items = shelfMap["General"][boxId];
+
+                                    const count = items.length;
+                                    const hasMatch = searchQuery && items.some(item => 
+                                      String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || 
+                                      String(item.name).toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                      (item.barcodes && item.barcodes.toLowerCase().includes(searchQuery.toLowerCase()))
+                                    );
+                                    
+                                    let bgClass = "bg-white";
+                                    if (count > 0) bgClass = "bg-orange-100 border-orange-300 text-orange-800";
+                                    if (hasMatch) bgClass = "bg-yellow-300 border-yellow-500 animate-pulse";
+
+                                    return (
+                                       <div 
+                                          key={boxId}
+                                          onClick={() => onLocationClick(items, { type: 'Box', rackId: 'Aisle', shelfId: boxId, fullId: boxId })}
+                                          className={`h-12 rounded border ${bgClass} flex items-center justify-center cursor-pointer shadow-sm hover:shadow-md transition-all text-[11px] font-bold relative`}
+                                       >
+                                          {boxId}
+                                          {count > 0 && <span className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-slate-900 text-white text-xs font-bold rounded-full flex items-center justify-center border-2 border-white shadow-md z-10">{count}</span>}
+                                       </div>
+                                    );
+                                 })}
+                              </div>
+                            )}
+                         </div>
+                       )
+                     })}
+                   </div>
+                </div>
+             );
+          };
+
+          return (
+            <div className="flex justify-center p-6 bg-slate-100 rounded-xl border border-slate-200 h-full overflow-y-auto">
+               <div className="flex gap-4 w-full max-w-5xl">
+                 <div className="flex-1 flex flex-col gap-4">
+                    <h3 className="text-center text-xs font-bold text-slate-400 uppercase">Left Wing (H-P)</h3>
+                    {RACKS_LEFT.map(r => <div key={r}>{renderRack(r)}</div>)}
+                 </div>
+                 <div className="w-48 flex flex-col items-center">
+                    <div className="h-8 w-full bg-red-100 border border-red-200 rounded text-[10px] font-bold text-red-500 flex items-center justify-center uppercase mb-4"><Ban size={12} className="mr-1"/> Blocked</div>
+                    {renderAisle()}
+                    <div className="h-8 w-full bg-emerald-100 border border-emerald-200 rounded text-[10px] font-bold text-emerald-600 flex items-center justify-center uppercase mt-4"><DoorOpen size={12} className="mr-1"/> Entrance</div>
+                 </div>
+                 <div className="flex-1 flex flex-col gap-4">
+                    <h3 className="text-center text-xs font-bold text-slate-400 uppercase">Right Wing (A-G)</h3>
+                    {RACKS_RIGHT.map(r => <div key={r}>{renderRack(r)}</div>)}
+                 </div>
+               </div>
+            </div>
+          );
+        };
+
+        const StockViewPage = ({ settings }) => {
+          const [isLoading, setIsLoading] = useState(false);
+          const [stockData, setStockData] = useState([]);
+          const [searchQuery, setSearchQuery] = useState("");
+          const [selectedRack, setSelectedRack] = useState(null);
+          const [expandedShelves, setExpandedShelves] = useState([]);
+          const [viewMode, setViewMode] = useState('graphic');
+          
+          // Aisle Layout State (Persisted)
+          const [aisleLayout, setAisleLayout] = useState(() => {
+             const saved = localStorage.getItem('aisleLayout');
+             return saved ? JSON.parse(saved) : DEFAULT_AISLE_LAYOUT;
+          });
+
+          // Modal Context State
+          const [shelfModal, setShelfModal] = useState({ show: false, context: null });
+          const [editingItem, setEditingItem] = useState(null);
+          const [managingBarcodesItem, setManagingBarcodesItem] = useState(null);
+          const [isSavingLoc, setIsSavingLoc] = useState(false);
+          const [showAisleConfig, setShowAisleConfig] = useState(false);
+
+          useEffect(() => {
+             localStorage.setItem('aisleLayout', JSON.stringify(aisleLayout));
+          }, [aisleLayout]);
+
+          const fetchStock = async () => {
+            if (!settings.googleScriptUrl) return;
+            setIsLoading(true);
+            try {
+              const response = await fetchWithRetry(`${settings.googleScriptUrl}?action=GET_STOCK_DATA`);
+              const json = await response.json();
+              if (json.status === 'success') {
+                setStockData(json.data);
+              }
+            } catch (e) {
+              console.error("Stock fetch failed", e);
+              alert("Could not load stock data. Check internet/script.");
+            } finally {
+              setIsLoading(false);
+            }
+          };
+
+          useEffect(() => {
+            fetchStock();
+          }, []);
+
+          const inventory = useMemo(() => {
+            const locationMap = {};
+            [...RACKS_LEFT, ...RACKS_RIGHT].forEach(r => { locationMap[r] = {}; });
+            aisleLayout.forEach(group => {
+               group.boxes.forEach(box => {
+                  if (!locationMap["General"]) locationMap["General"] = {};
+                  if (!locationMap["General"][box]) locationMap["General"][box] = [];
+               });
+            });
+
+            stockData.forEach(item => {
+              const rawLocs = String(item.location || "Unassigned").split(',').map(s => s.trim()).filter(Boolean);
+              if (rawLocs.length === 0) rawLocs.push("Unassigned");
+
+              rawLocs.forEach(loc => {
+                  let rack = "General";
+                  let shelf = "Main";
+                  let qty = "";
+
+                  const cleanLoc = loc.toUpperCase();
+                  const cleanLocRaw = loc; 
+
+                  if (cleanLoc.startsWith("BOX")) {
+                     rack = "General"; 
+                     const parts = cleanLocRaw.split('-');
+                     let boxIdRaw = parts[0];
+                     if(boxIdRaw.toUpperCase().startsWith("BOX")) {
+                         boxIdRaw = "Box" + boxIdRaw.substring(3);
+                     }
+                     shelf = boxIdRaw; 
+
+                     if (parts.length > 1) {
+                        const possibleQty = parseInt(parts[1]);
+                        if (!isNaN(possibleQty)) qty = possibleQty.toString();
+                     }
+                  } else {
+                    const strictMatch = cleanLoc.match(/^([A-Z]+)(\d+)-(\d+)$/);
+                    const simpleMatch = cleanLoc.match(/^([A-Z]+)(\d+)$/);
+                    
+                    if (strictMatch) {
+                       rack = strictMatch[1];
+                       shelf = strictMatch[2];
+                       qty = strictMatch[3];
+                    } else if (simpleMatch) {
+                       rack = simpleMatch[1];
+                       shelf = simpleMatch[2];
+                    } else if (cleanLoc.includes('-')) {
+                       const parts = cleanLoc.split('-');
+                       const possibleQty = parseInt(parts[parts.length-1]);
+                       if (!isNaN(possibleQty) && possibleQty < 1000) {
+                          qty = possibleQty.toString();
+                          parts.pop(); 
+                       }
+                       rack = parts[0].trim();
+                       shelf = parts.slice(1).join('-').trim() || "Main";
+                    } else {
+                       rack = cleanLoc;
+                    }
+                  }
+
+                  if (!locationMap[rack]) locationMap[rack] = {};
+                  if (!locationMap[rack][shelf]) locationMap[rack][shelf] = [];
+                  
+                  locationMap[rack][shelf].push({
+                    ...item,
+                    qtyAtLocation: qty ? `${qty} Pcs` : undefined
+                  });
+              });
+            });
+
+            return Object.entries(locationMap).map(([rackName, shelvesObj]) => ({
+              id: rackName,
+              subLocations: Object.entries(shelvesObj).map(([shelfName, items]) => ({
+                id: shelfName,
+                items: items
+              }))
+            })).sort((a, b) => {
+               const isRackA = /^[A-Z]$/.test(a.id);
+               const isRackB = /^[A-Z]$/.test(b.id);
+               if (isRackA && isRackB) return a.id.localeCompare(b.id);
+               if (isRackA) return -1;
+               if (isRackB) return 1;
+               return a.id.localeCompare(b.id);
+            });
+          }, [stockData, aisleLayout]);
+
+          const filteredInventory = useMemo(() => {
+            if (!searchQuery) return inventory;
+            const lowerQ = searchQuery.toLowerCase();
+
+            return inventory.map(rack => {
+              const rackMatches = rack.id.toLowerCase().includes(lowerQ);
+              const filteredShelves = rack.subLocations.map(shelf => {
+                const shelfMatches = shelf.id.toLowerCase().includes(lowerQ);
+                const matchingItems = shelf.items.filter(item => 
+                  String(item.sku).toLowerCase().includes(lowerQ) || 
+                  String(item.name).toLowerCase().includes(lowerQ) ||
+                  (item.barcodes && item.barcodes.toLowerCase().includes(lowerQ))
+                );
+                if (rackMatches || shelfMatches || matchingItems.length > 0) {
+                   return { ...shelf, items: matchingItems.length > 0 ? matchingItems : shelf.items };
+                }
+                return null;
+              }).filter(Boolean);
+
+              if (filteredShelves.length > 0) {
+                return { ...rack, subLocations: filteredShelves };
+              }
+              return null;
+            }).filter(Boolean);
+
+          }, [inventory, searchQuery]);
+
+          // Reactive Modal Items
+          const modalItems = useMemo(() => {
+            if (!shelfModal.context) return [];
+            const ctx = shelfModal.context;
+
+            const findItems = (rackId, shelfId) => {
+                const rack = inventory.find(r => r.id === rackId);
+                if (rack) {
+                    const shelf = rack.subLocations.find(s => s.id === shelfId);
+                    if (shelf) return shelf.items;
+                }
+                return [];
+            };
+
+            if (ctx.type === 'Rack') {
+               return findItems(ctx.rackId, ctx.shelfId);
+            } else if (ctx.type === 'Box') {
+               let items = [];
+               let rack = inventory.find(r => r.id === "General");
+               if (rack) {
+                  let s = rack.subLocations.find(sl => sl.id === ctx.shelfId); 
+                  if (s) items = s.items;
+               }
+               if (items.length === 0) {
+                  rack = inventory.find(r => r.id === ctx.shelfId);
+                  if (rack) {
+                    let s = rack.subLocations.find(sl => sl.id === "Main");
+                    if (s) items = s.items;
+                  }
+               }
+               return items;
+            }
+            return [];
+          }, [inventory, shelfModal.context]);
+
+          const handleUpdateStockLocation = async (sku, newLocationString) => {
+             if (!settings.googleScriptUrl) return;
+             setIsSavingLoc(true);
+             try {
+               const response = await fetchWithRetry(settings.googleScriptUrl, {
+                  method: 'POST',
+                  // Using text/plain to avoid OPTIONS preflight issues sometimes
+                  headers: { 'Content-Type': 'text/plain' },
+                  body: JSON.stringify({
+                    action: 'UPDATE_STOCK_LOCATION',
+                    data: { sku, location: newLocationString }
+                  })
+               });
+               
+               const json = await response.json();
+               if (json.status === 'error') {
+                 throw new Error(json.message || "Script returned error");
+               }
+
+               setStockData(prev => prev.map(i => i.sku === sku ? { ...i, location: newLocationString } : i));
+               return true;
+             } catch (e) {
+               console.error(e);
+               alert(`Failed to update location: ${e.message}`);
+               return false;
+             } finally {
+               setIsSavingLoc(false);
+             }
+          };
+
+          const handleUpdateBarcodes = async (sku, newBarcodes) => {
+            if (!settings.googleScriptUrl) return;
+            setIsSavingLoc(true);
+            try {
+              const response = await fetchWithRetry(settings.googleScriptUrl, {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'text/plain' },
+                 body: JSON.stringify({
+                   action: 'UPDATE_STOCK_BARCODES',
+                   data: { sku, barcodes: newBarcodes }
+                 })
+              });
+              
+              const json = await response.json();
+              if (json.status === 'error') {
+                throw new Error(json.message || "Script returned error");
+              }
+
+              setStockData(prev => prev.map(i => i.sku === sku ? { ...i, barcodes: newBarcodes } : i));
+              setManagingBarcodesItem(null); // Close modal
+              return true;
+            } catch (e) {
+              console.error(e);
+              alert(`Failed to update barcodes: ${e.message}`);
+              return false;
+            } finally {
+              setIsSavingLoc(false);
+            }
+          };
+
+          const handleAddItemToLocation = async (item, locId) => {
+             const targetLoc = `${locId}-1`;
+             const currentLocs = item.location === "Unassigned" ? [] : item.location.split(',').map(s => s.trim());
+             const existingIndex = currentLocs.findIndex(l => l.startsWith(locId));
+             
+             let newLocString = "";
+             if (existingIndex >= 0) {
+                alert("Item is already in this location. Use the Quantity buttons to adjust.");
+                return;
+             } else {
+                newLocString = [...currentLocs, targetLoc].join(', ');
+             }
+             await handleUpdateStockLocation(item.sku, newLocString);
+          };
+
+          const handleRemoveItemFromLocation = async (item, locIdToRemove) => {
+             const currentLocs = item.location.split(',').map(s => s.trim());
+             const newLocs = currentLocs.filter(l => {
+                 const cleanL = l.toUpperCase();
+                 const cleanTarget = locIdToRemove.toUpperCase();
+                 if (cleanL === cleanTarget) return false;
+                 if (cleanL.startsWith(cleanTarget + '-')) return false;
+                 return true;
+             });
+             
+             const newLocString = newLocs.length > 0 ? newLocs.join(', ') : "Unassigned";
+             await handleUpdateStockLocation(item.sku, newLocString);
+          };
+
+          const handleUpdateQty = async (item, locId, delta) => {
+            const currentLocs = item.location.split(',').map(s => s.trim());
+            const idx = currentLocs.findIndex(l => {
+               const cleanL = l.toUpperCase();
+               const cleanTarget = locId.toUpperCase();
+               return cleanL === cleanTarget || cleanL.startsWith(cleanTarget + '-');
+            });
+            
+            if (idx === -1) {
+               if (delta > 0) {
+                 const newLocs = [...currentLocs, `${locId}-${delta}`].join(', ');
+                 await handleUpdateStockLocation(item.sku, newLocs);
+               }
+               return; 
+            }
+
+            let currentQty = 1;
+            const segment = currentLocs[idx];
+            const match = segment.match(/-(\d+)$/);
+            if (match) currentQty = parseInt(match[1]);
+            else if (segment.toUpperCase() === locId.toUpperCase()) currentQty = 1;
+            
+            const newQty = currentQty + delta;
+            
+            if (newQty <= 0) {
+               if (confirm("Quantity is 0. Remove item from this location?")) {
+                  handleRemoveItemFromLocation(item, locId);
+               }
+               return;
+            }
+
+            currentLocs[idx] = `${locId}-${newQty}`;
+            const newLocString = currentLocs.join(', ');
+            await handleUpdateStockLocation(item.sku, newLocString);
+          };
+
+          const toggleShelf = (shelfId) => {
+            if (expandedShelves.includes(shelfId)) {
+              setExpandedShelves(prev => prev.filter(id => id !== shelfId));
+            } else {
+              setExpandedShelves(prev => [...prev, shelfId]);
+            }
+          };
+
+          const handleSaveLocationEdit = async (newLoc) => {
+            if (!editingItem) return;
+            await handleUpdateStockLocation(editingItem.sku, newLoc);
+            setEditingItem(null);
+          };
+
+          const handleGraphicLocationClick = (items, context) => {
+             setShelfModal({ show: true, context });
+          };
+
+          return (
+            <div className="space-y-6 animate-in fade-in duration-500 h-[calc(100vh-100px)] flex flex-col">
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><MapPin className="text-orange-600"/> Visual Stock Map</h2>
+                  <p className="text-sm text-gray-500">Locate inventory across Racks, Shelves, and Boxes.</p>
+                </div>
+                <div className="flex gap-3 w-full md:w-auto">
+                   <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+                      <button onClick={() => setViewMode('list')} className={`p-2 rounded-md flex items-center gap-2 text-xs font-bold transition-all ${viewMode === 'list' ? 'bg-white shadow text-black' : 'text-gray-500 hover:text-gray-700'}`}><List size={16}/> LIST</button>
+                      <button onClick={() => setViewMode('graphic')} className={`p-2 rounded-md flex items-center gap-2 text-xs font-bold transition-all ${viewMode === 'graphic' ? 'bg-white shadow text-black' : 'text-gray-500 hover:text-gray-700'}`}><LayoutGrid size={16}/> MAP</button>
+                   </div>
+                   <div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-3 text-gray-400" size={18}/><input value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setSelectedRack(null); setExpandedShelves([]); }} className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 ring-orange-500 outline-none transition-all text-black" placeholder="Find SKU or Barcode..." /></div>
+                   <button onClick={fetchStock} className="p-2.5 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-600 transition-colors"><RefreshCw size={20} className={isLoading ? "animate-spin" : ""}/></button>
+                </div>
+              </div>
+
+              {viewMode === 'graphic' ? (
+                <WarehouseVisualizer 
+                   inventory={inventory} 
+                   searchQuery={searchQuery}
+                   aisleLayout={aisleLayout}
+                   onLocationClick={handleGraphicLocationClick}
+                   onConfigAisle={() => setShowAisleConfig(true)}
+                />
+              ) : (
+                <div className="flex-1 bg-gray-50 rounded-xl border border-gray-200 overflow-hidden flex">
+                  <div className={`w-full md:w-1/3 lg:w-1/4 bg-white border-r border-gray-200 overflow-y-auto p-4 space-y-3 ${selectedRack && 'hidden md:block'}`}>
+                     <h3 className="text-xs font-bold uppercase text-gray-400 mb-2">Warehouse Locations</h3>
+                     {filteredInventory.length === 0 && !isLoading && <div className="text-center text-gray-400 py-10">No locations found</div>}
+                     {filteredInventory.map(rack => (
+                       <div key={rack.id} onClick={() => setSelectedRack(rack.id)} className={`p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md flex justify-between items-center group ${selectedRack === rack.id ? 'bg-orange-50 border-orange-300 shadow-sm' : 'bg-white border-gray-200 hover:border-gray-300'}`}>
+                         <div><div className="flex items-center gap-2"><Archive size={18} className={selectedRack === rack.id ? 'text-orange-600' : 'text-gray-400'}/><span className={`font-bold text-sm ${selectedRack === rack.id ? 'text-orange-900' : 'text-gray-700'}`}>{rack.id}</span></div><div className="text-xs text-gray-400 mt-1 ml-6">{rack.subLocations.length} Locations • {rack.subLocations.reduce((acc, s) => acc + s.items.length, 0)} Items</div></div><ChevronRight size={16} className={`text-gray-300 transition-transform ${selectedRack === rack.id ? 'rotate-90 text-orange-400' : 'group-hover:text-gray-500'}`}/>
+                       </div>
+                     ))}
+                  </div>
+                  <div className={`flex-1 overflow-y-auto bg-slate-50 p-4 md:p-8 ${!selectedRack && 'hidden md:flex md:items-center md:justify-center'}`}>
+                     {!selectedRack ? ( <div className="text-center text-gray-400"><Package size={48} className="mx-auto mb-4 opacity-20"/><p>Select a Rack to view contents</p></div> ) : (
+                       <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+                          <div className="flex items-center gap-2 md:hidden mb-4"><button onClick={() => setSelectedRack(null)} className="text-gray-600"><ArrowRight className="rotate-180"/></button><span className="font-bold text-lg">{selectedRack}</span></div>
+                          {filteredInventory.find(r => r.id === selectedRack)?.subLocations.map(shelf => {
+                             const isExpanded = searchQuery ? true : expandedShelves.includes(shelf.id);
+                             return (
+                            <div key={shelf.id} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                               <div onClick={() => toggleShelf(shelf.id)} className="px-6 py-3 border-b border-gray-100 bg-gray-50 flex justify-between items-center cursor-pointer hover:bg-gray-100 transition-colors">
+                                  <h4 className="font-bold text-sm text-gray-800 flex items-center gap-2"><Layers size={16} className="text-blue-500"/> {shelf.id}</h4>
+                                  <div className="flex items-center gap-3"><span className="text-xs bg-white border px-2 py-0.5 rounded text-gray-500">{shelf.items.length} Items</span><ChevronDown size={16} className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}/></div>
+                               </div>
+                               {isExpanded && (
+                               <div className="divide-y divide-gray-100 animate-in slide-in-from-top-2 duration-200">
+                                  {shelf.items.length === 0 ? ( <div className="p-4 text-xs text-gray-400 italic">Empty Location</div> ) : (
+                                    shelf.items.map((item, idx) => (
+                                      <div key={idx} className={`p-4 hover:bg-blue-50/30 transition-colors flex items-center justify-between ${searchQuery && (String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || (item.barcodes && item.barcodes.toLowerCase().includes(searchQuery.toLowerCase()))) ? 'bg-yellow-50' : ''}`}>
+                                         <div><div className="flex items-center gap-2 mb-1"><span className="font-mono font-bold text-xs text-blue-700 bg-blue-50 px-2 py-0.5 rounded">{item.sku}</span><span className="text-[10px] text-gray-400 border px-1 rounded">MRP {item.mrp}</span></div><div className="text-sm font-medium text-gray-800">{item.name}</div></div>
+                                         <div className="flex items-center gap-2">{item.qtyAtLocation && (<span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-1 rounded">{item.qtyAtLocation}</span>)}<div className="hidden md:block"><span className="text-xs font-bold text-gray-400 bg-gray-100 px-2 py-1 rounded">{selectedRack}-{shelf.id}</span></div><button onClick={(e) => { e.stopPropagation(); setEditingItem(item); }} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Edit3 size={16}/></button></div>
+                                      </div>
+                                    ))
+                                  )}
+                               </div>
+                               )}
+                            </div>
+                          )})}
+                       </div>
+                     )}
+                  </div>
+                </div>
+              )}
+              
+              {editingItem && <LocationEditModal item={editingItem} currentLoc={editingItem.location} onClose={() => setEditingItem(null)} onSave={handleSaveLocationEdit} isSaving={isSavingLoc} />}
+              
+              {managingBarcodesItem && (
+                <BarcodeManagerModal 
+                  item={managingBarcodesItem} 
+                  onClose={() => setManagingBarcodesItem(null)}
+                  onSave={(codes) => handleUpdateBarcodes(managingBarcodesItem.sku, codes)}
+                  isSaving={isSavingLoc}
+                />
+              )}
+
+              {shelfModal.show && shelfModal.context && (
+                <ShelfDetailModal 
+                  context={shelfModal.context} 
+                  items={modalItems} 
+                  allItems={stockData} 
+                  searchQuery={searchQuery}
+                  isProcessing={isSavingLoc}
+                  onClose={() => setShelfModal({...shelfModal, show: false})} 
+                  onAddLocation={handleAddItemToLocation} 
+                  onRemoveLocation={handleRemoveItemFromLocation} 
+                  onUpdateQty={handleUpdateQty}
+                  onManageBarcodes={setManagingBarcodesItem}
+                />
+              )}
+
+              {showAisleConfig && (
+                 <AisleConfigModal 
+                    currentLayout={aisleLayout} 
+                    onClose={() => setShowAisleConfig(false)}
+                    onSave={(newLayout) => { setAisleLayout(newLayout); setShowAisleConfig(false); }}
+                 />
+              )}
+            </div>
+          );
+        };
+
+        const App = () => {
+          const [activeTab, setActiveTab] = useState('stock');
+          const [settings, setSettings] = useState({
+            googleScriptUrl: DEFAULT_SCRIPT_URL,
+          });
+
+          return (
+            <div className="flex flex-col h-screen bg-gray-100 font-sans text-slate-900">
+               {/* Top Navigation Bar */}
+               <header className="bg-slate-900 text-white shadow-lg z-50">
+                  <div className="px-4 h-16 flex items-center justify-between">
+                     <div className="flex items-center gap-3">
+                        <div className="bg-blue-600 p-2 rounded-lg">
+                           <Package size={20} className="text-white"/>
+                        </div>
+                        <div>
+                           <h1 className="font-bold text-lg leading-tight">Gemini Inventory</h1>
+                           <div className="text-[10px] text-slate-400 font-medium tracking-wider uppercase">Warehouse Management</div>
+                        </div>
+                     </div>
+                     
+                     <div className="flex bg-slate-800/50 p-1 rounded-lg gap-1">
+                        <button 
+                          onClick={() => setActiveTab('stock')}
+                          className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'stock' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                        >
+                          <LayoutDashboard size={16}/> Stock
+                        </button>
+                        <button 
+                          onClick={() => setActiveTab('settings')}
+                          className={`px-4 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${activeTab === 'settings' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                        >
+                          <Settings size={16}/> Settings
+                        </button>
+                     </div>
+                  </div>
+               </header>
+
+               {/* Main View Area */}
+               <main className="flex-1 overflow-hidden relative">
+                  {activeTab === 'stock' && <StockViewPage settings={settings} />}
+                  
+                  {activeTab === 'settings' && (
+                     <div className="h-full overflow-y-auto p-4 md:p-8">
+                        <div className="max-w-2xl mx-auto bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                           <div className="p-6 border-b border-gray-100 bg-gray-50 flex items-center gap-3">
+                              <div className="bg-slate-200 p-2 rounded-lg"><Settings className="text-slate-600" size={24}/></div>
+                              <div>
+                                 <h2 className="text-lg font-bold text-gray-900">System Configuration</h2>
+                                 <p className="text-xs text-gray-500">Manage connection parameters.</p>
+                              </div>
+                           </div>
+                           <div className="p-6 space-y-6">
+                              <div>
+                                 <label className="block text-sm font-bold text-gray-700 mb-2">Google App Script URL</label>
+                                 <div className="relative">
+                                    <input 
+                                      value={settings.googleScriptUrl || ''}
+                                      onChange={(e) => setSettings({...settings, googleScriptUrl: e.target.value})}
+                                      className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg text-sm font-mono text-slate-600 focus:ring-2 ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                                      placeholder="https://script.google.com/macros/s/..."
+                                    />
+                                    <Link size={16} className="absolute left-3 top-3.5 text-gray-400"/>
+                                 </div>
+                                 <p className="text-xs text-gray-400 mt-2">
+                                    This URL is used to fetch and update stock data. Ensure the script is deployed as a Web App with "Anyone" access.
+                                 </p>
+                              </div>
+
+                              <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 flex gap-3 items-start">
+                                 <AlertCircle className="text-blue-600 shrink-0 mt-0.5" size={18}/>
+                                 <div className="text-xs text-blue-800">
+                                    <p className="font-bold mb-1">Deployment Note</p>
+                                    <p>If you change the Google Sheet structure, you may need to update the script accordingly. The current integration supports fetching stock, updating locations, and managing barcodes.</p>
+                                 </div>
+                              </div>
+                           </div>
+                           <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+                              <button className="px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-sm transition-colors shadow-lg shadow-slate-200">
+                                 Save Configuration
+                              </button>
+                           </div>
+                        </div>
+                     </div>
+                  )}
+               </main>
+            </div>
+          );
+        };
+
+        const rootElement = document.getElementById('root');
+        const root = createRoot(rootElement);
+        root.render(<React.StrictMode><App /></React.StrictMode>);
+    </script>
+</body>
+</html>
