@@ -780,6 +780,10 @@ function response(data) {
         const ShelfDetailModal = ({ context, items, allItems, searchQuery, isProcessing, onClose, onAddLocation, onRemoveLocation, onUpdateQty }) => {
           const [search, setSearch] = useState("");
           const [isAdding, setIsAdding] = useState(false);
+          // New state for adding items with quantity
+          const [selectedItemForAdd, setSelectedItemForAdd] = useState(null);
+          const [qtyToAdd, setQtyToAdd] = useState(1);
+
           const searchResults = useMemo(() => (!search || search.length < 2) ? [] : allItems.filter(i => String(i.sku).toLowerCase().includes(search.toLowerCase()) || String(i.name).toLowerCase().includes(search.toLowerCase())).slice(0, 10), [search, allItems]);
           const displayTitle = context.type === 'Rack' ? `Rack ${context.rackId} - Shelf ${context.shelfId}` : `Box ${context.shelfId}`;
           const displayLocId = context.type === 'Rack' ? `${context.rackId}${context.shelfId}` : context.shelfId;
@@ -798,6 +802,21 @@ function response(data) {
             }
           };
 
+          const handleSelectForAdd = (item) => {
+             setSelectedItemForAdd(item);
+             setQtyToAdd(1);
+          };
+
+          const confirmAdd = () => {
+             if(selectedItemForAdd && qtyToAdd > 0) {
+                 onAddLocation(selectedItemForAdd, displayLocId, qtyToAdd);
+                 setSearch("");
+                 setIsAdding(false);
+                 setSelectedItemForAdd(null);
+                 setQtyToAdd(1);
+             }
+          };
+
           return (
             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col relative overflow-hidden ring-1 ring-gray-900/5">
@@ -810,8 +829,43 @@ function response(data) {
                   </div>
                   <div className="p-5 border-b border-gray-100 bg-gray-50/50">
                      {!isAdding ? (<button onClick={() => setIsAdding(true)} className="w-full py-3 bg-white text-blue-600 rounded-xl border border-blue-200 shadow-sm text-sm font-bold hover:border-blue-400 hover:shadow-md transition-all flex items-center justify-center gap-2"><Plus size={18}/> Add Item to {displayLocId}</button>) : (
-                        <div className="relative animate-in fade-in zoom-in-95 duration-200"><div className="flex items-center gap-2 bg-white p-2 rounded-xl border border-blue-500 shadow-sm ring-4 ring-blue-50"><Search size={18} className="text-blue-500 ml-2"/><input autoFocus value={search} onChange={e => setSearch(e.target.value)} className="flex-1 text-sm outline-none bg-transparent placeholder-gray-400" placeholder="Scan or type SKU..."/><button onClick={() => { setIsAdding(false); setSearch(""); }} className="p-2 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-lg"><X size={16}/></button></div>
-                           {search && (<div className="absolute top-full left-0 right-0 bg-white border border-gray-200 shadow-xl rounded-xl max-h-56 overflow-y-auto mt-2 z-20">{searchResults.length === 0 ? <div className="p-4 text-xs text-center text-gray-400 font-medium">No items found</div> : searchResults.map(res => (<div key={res.sku} onClick={() => { onAddLocation(res, displayLocId); setSearch(""); setIsAdding(false); }} className="p-3 hover:bg-blue-50 cursor-pointer border-b border-gray-50 last:border-0 flex justify-between items-center group"><div><div className="font-bold text-sm text-gray-800 group-hover:text-blue-700">{res.sku}</div><div className="text-xs text-gray-500 truncate">{res.name}</div></div><Plus size={16} className="text-blue-400 opacity-0 group-hover:opacity-100"/></div>))}</div>)}
+                        <div className="relative animate-in fade-in zoom-in-95 duration-200"><div className="flex items-center gap-2 bg-white p-2 rounded-xl border border-blue-500 shadow-sm ring-4 ring-blue-50"><Search size={18} className="text-blue-500 ml-2"/><input autoFocus value={search} onChange={e => { setSearch(e.target.value); setSelectedItemForAdd(null); }} className="flex-1 text-sm outline-none bg-transparent placeholder-gray-400" placeholder="Scan or type SKU..."/><button onClick={() => { setIsAdding(false); setSearch(""); setSelectedItemForAdd(null); }} className="p-2 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded-lg"><X size={16}/></button></div>
+                           {search && (<div className="absolute top-full left-0 right-0 bg-white border border-gray-200 shadow-xl rounded-xl max-h-56 overflow-y-auto mt-2 z-20">
+                              {searchResults.length === 0 ? <div className="p-4 text-xs text-center text-gray-400 font-medium">No items found</div> : 
+                                searchResults.map(res => {
+                                  const isSelected = selectedItemForAdd?.sku === res.sku;
+                                  return (
+                                     <div key={res.sku} className={`p-3 border-b border-gray-50 last:border-0 ${isSelected ? 'bg-blue-50' : 'hover:bg-blue-50 cursor-pointer'}`} onClick={() => !isSelected && handleSelectForAdd(res)}>
+                                        {!isSelected ? (
+                                           <div className="flex justify-between items-center group">
+                                             <div><div className="font-bold text-sm text-gray-800 group-hover:text-blue-700">{res.sku}</div><div className="text-xs text-gray-500 truncate">{res.name}</div></div>
+                                             <Plus size={16} className="text-blue-400 opacity-0 group-hover:opacity-100"/>
+                                           </div>
+                                        ) : (
+                                           <div className="flex flex-col gap-2 animate-in fade-in">
+                                              <div className="flex justify-between">
+                                                 <div>
+                                                    <div className="font-bold text-sm text-blue-800">{res.sku}</div>
+                                                    <div className="text-xs text-gray-500">{res.name}</div>
+                                                 </div>
+                                              </div>
+                                              <div className="flex items-center gap-2 justify-between bg-white p-1 rounded-lg border border-blue-200">
+                                                 <div className="flex items-center gap-0 bg-gray-50 rounded border border-gray-200 h-8 overflow-hidden">
+                                                    <button onClick={(e) => { e.stopPropagation(); setQtyToAdd(Math.max(1, qtyToAdd - 1)); }} className="w-8 h-full flex items-center justify-center hover:bg-gray-200 active:bg-gray-300"><Minus size={14}/></button>
+                                                    <span className="text-sm font-bold w-10 text-center bg-white h-full flex items-center justify-center border-x border-gray-200">{qtyToAdd}</span>
+                                                    <button onClick={(e) => { e.stopPropagation(); setQtyToAdd(qtyToAdd + 1); }} className="w-8 h-full flex items-center justify-center hover:bg-gray-200 active:bg-gray-300"><Plus size={14}/></button>
+                                                 </div>
+                                                 <div className="flex gap-2">
+                                                    <button onClick={(e) => { e.stopPropagation(); setSelectedItemForAdd(null); }} className="px-3 py-1 text-xs font-bold text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded">Cancel</button>
+                                                    <button onClick={(e) => { e.stopPropagation(); confirmAdd(); }} className="px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded shadow-sm hover:bg-blue-700 flex items-center gap-1"><Check size={12}/> Add</button>
+                                                 </div>
+                                              </div>
+                                           </div>
+                                        )}
+                                     </div>
+                                  )
+                                })
+                              }</div>)}
                         </div>
                      )}
                   </div>
@@ -859,10 +913,16 @@ function response(data) {
         };
 
         const WarehouseVisualizer = ({ inventory, searchQuery, aisleLayout, onRackClick, onBoxClick, onConfigAisle }) => {
+          const [expandedGroups, setExpandedGroups] = useState(aisleLayout.map(g => g.id)); // Default Expanded
+
           const shelfMap = useMemo(() => {
             const map = {}; inventory.forEach(rack => { const rackId = rack.id.replace("Rack ", "").trim(); if (!map[rackId]) map[rackId] = {}; rack.subLocations.forEach(shelf => { const shelfId = shelf.id.replace("Shelf ", "").trim(); map[rackId][shelfId] = shelf.items; }); }); return map;
           }, [inventory]);
           
+          const toggleGroup = (id) => {
+             setExpandedGroups(prev => prev.includes(id) ? prev.filter(g => g !== id) : [...prev, id]);
+          };
+
           const renderRackBlock = (rackId) => {
             let totalItems = 0; let hasMatch = false; 
             if (shelfMap[rackId]) Object.values(shelfMap[rackId]).forEach(items => { 
@@ -872,19 +932,73 @@ function response(data) {
             return (<div onClick={() => onRackClick(rackId)} className={`w-20 h-28 rounded-xl border-2 transition-all cursor-pointer flex flex-col items-center justify-center gap-1 shadow-sm hover:shadow-md hover:-translate-y-1 relative group ${totalItems > 0 ? 'bg-white border-slate-300' : 'bg-slate-50 border-slate-200 border-dashed'} ${hasMatch ? 'animate-blink-red' : ''}`}><span className="text-xl font-black text-slate-700">{rackId}</span>{totalItems > 0 && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-bold">{totalItems} Items</span>}<div className="absolute inset-x-2 bottom-2 h-1 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-blue-500" style={{ width: `${Math.min((totalItems / 50) * 100, 100)}%` }}></div></div></div>);
           };
           
-          const renderAisleRow = (group) => (
-             <div key={group.id} className="flex gap-4 justify-center mb-6 last:mb-0">
-                {group.boxes.map(boxId => {
-                   let items = []; const normalizedBoxId = boxId; if (shelfMap["General"]) { const keys = Object.keys(shelfMap["General"]); const matchKey = keys.find(k => k.toLowerCase() === normalizedBoxId.toLowerCase()); if (matchKey) items = shelfMap["General"][matchKey]; }
-                   const count = items.length; 
-                   const hasMatch = searchQuery && items.some(item => String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(item.name).toLowerCase().includes(searchQuery.toLowerCase()));
-                   return (<div key={boxId} onClick={() => onBoxClick(boxId, items)} className={`w-16 h-12 rounded-lg border-2 flex items-center justify-center text-xs font-bold shadow-sm cursor-pointer transition-all hover:scale-105 ${count > 0 ? 'bg-orange-50 border-orange-200 text-orange-800' : 'bg-white border-dashed border-gray-300 text-gray-400'} ${hasMatch ? 'animate-blink-red' : ''}`}>{boxId}</div>)
-                })}
-             </div>
-          );
+          const renderAisleRow = (group) => {
+             const isExpanded = expandedGroups.includes(group.id);
+             return (
+                <div key={group.id} className="w-full mb-3 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm transition-all hover:shadow-md">
+                   <div 
+                      onClick={() => toggleGroup(group.id)} 
+                      className={`px-4 py-2 flex justify-between items-center cursor-pointer transition-colors ${isExpanded ? 'bg-slate-100' : 'bg-white hover:bg-slate-50'}`}
+                   >
+                      <span className="font-bold text-xs uppercase text-slate-600 tracking-wide">{group.name}</span>
+                      <div className="flex items-center gap-2">
+                         <span className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-md font-bold">{group.boxes.length} Boxes</span>
+                         <ChevronDown size={14} className={`text-slate-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}/>
+                      </div>
+                   </div>
+                   {isExpanded && (
+                       <div className="p-3 bg-slate-50/50 border-t border-slate-100 flex flex-wrap gap-3 justify-center">
+                          {group.boxes.map(boxId => {
+                             let items = []; const normalizedBoxId = boxId; 
+                             if (shelfMap["General"]) { 
+                                 const keys = Object.keys(shelfMap["General"]); 
+                                 const matchKey = keys.find(k => k.toLowerCase() === normalizedBoxId.toLowerCase()); 
+                                 if (matchKey) items = shelfMap["General"][matchKey]; 
+                             }
+                             const count = items.length; 
+                             const hasMatch = searchQuery && items.some(item => String(item.sku).toLowerCase().includes(searchQuery.toLowerCase()) || String(item.name).toLowerCase().includes(searchQuery.toLowerCase()));
+                             
+                             return (
+                                <div key={boxId} onClick={() => onBoxClick(boxId, items)} className={`w-14 h-10 rounded-lg border flex items-center justify-center text-[10px] font-bold shadow-sm cursor-pointer transition-all hover:scale-105 hover:-translate-y-0.5 ${count > 0 ? 'bg-orange-50 border-orange-200 text-orange-800' : 'bg-white border-slate-200 text-gray-400'} ${hasMatch ? 'animate-blink-red' : ''}`}>
+                                   {boxId}
+                                </div>
+                             )
+                          })}
+                          {group.boxes.length === 0 && <span className="text-[10px] text-gray-400 italic">No boxes configured</span>}
+                       </div>
+                   )}
+                </div>
+             );
+          };
+
           return (
             <div className="flex flex-col h-full bg-[url('https://www.transparenttextures.com/patterns/brick-wall.png')] bg-repeat rounded-xl border border-slate-200 overflow-hidden relative">
-               <div className="flex-1 overflow-auto p-8 flex justify-center"><div className="flex gap-16 min-w-max"><div className="flex flex-col gap-4"><div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Left Wing</div>{RACKS_LEFT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}</div><div className="flex flex-col items-center px-8 border-x-2 border-dashed border-slate-200 bg-slate-50/50 rounded-3xl"><div className="flex items-center gap-2 mb-8 mt-4"><span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Central Aisle</span><button onClick={onConfigAisle} className="p-1 hover:bg-slate-200 rounded text-gray-400"><Settings2 size={14}/></button></div><div className="flex flex-col justify-center gap-8">{aisleLayout.map(group => renderAisleRow(group))}</div></div><div className="flex flex-col gap-4"><div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Right Wing</div>{RACKS_RIGHT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}</div></div></div>
+               <div className="flex-1 overflow-auto p-8 flex justify-center">
+                  <div className="flex gap-12 min-w-max">
+                     {/* Left Wing */}
+                     <div className="flex flex-col gap-4">
+                        <div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Left Wing</div>
+                        {RACKS_LEFT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}
+                     </div>
+                     
+                     {/* Central Aisle */}
+                     <div className="flex flex-col items-center w-80 px-4 pt-4 border-x-2 border-dashed border-slate-200 bg-slate-50/80 backdrop-blur-sm rounded-3xl h-fit min-h-[500px]">
+                        <div className="flex items-center gap-2 mb-6 mt-2 w-full justify-between px-2">
+                           <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Central Aisle</span>
+                           <button onClick={onConfigAisle} className="p-1.5 hover:bg-white bg-slate-100 rounded-lg text-slate-500 border border-transparent hover:border-slate-200 transition-all shadow-sm"><Settings2 size={14}/></button>
+                        </div>
+                        <div className="w-full flex flex-col gap-2 pb-8">
+                           {aisleLayout.map(group => renderAisleRow(group))}
+                        </div>
+                     </div>
+                     
+                     {/* Right Wing */}
+                     <div className="flex flex-col gap-4">
+                        <div className="text-center text-xs font-bold text-gray-400 mb-2 uppercase tracking-widest">Right Wing</div>
+                        {RACKS_RIGHT.map(r => <div key={r}>{renderRackBlock(r)}</div>)}
+                     </div>
+                  </div>
+               </div>
                <div className="absolute bottom-6 right-8 pointer-events-none"><div className="flex flex-col items-end gap-1 opacity-50">           
                 <div className="relative">
   <div className="h-16 w-2 bg-slate-900 rounded-full shadow-lg"></div>
@@ -980,10 +1094,17 @@ function response(data) {
              } catch (e) { if (!(e instanceof Error) || !e.message.includes("Error updating location")) alert(`Failed to update location.`); return false; } finally { setIsSavingLoc(false); }
           };
 
-          const handleAddItemToLocation = async (item, locId) => {
-             const targetLocBase = locId; const targetLoc = `${targetLocBase}-1`; const currentLocs = item.location === "Unassigned" ? [] : item.location.split(',').map(s => s.trim());
+          const handleAddItemToLocation = async (item, locId, qty = 1) => {
+             const targetLocBase = locId; 
+             const targetLoc = `${targetLocBase}-${qty}`; 
+             const currentLocs = item.location === "Unassigned" ? [] : item.location.split(',').map(s => s.trim());
              const existingIndex = currentLocs.findIndex(l => { const cleanL = l.toUpperCase(); const cleanTarget = targetLocBase.toUpperCase(); return cleanL === cleanTarget || cleanL.startsWith(cleanTarget + '-'); });
-             if (existingIndex >= 0) { if(confirm(`Item ${item.sku} is already in ${locId}. Add +1 to quantity?`)) handleUpdateQty(item, locId, 1); return; }
+             if (existingIndex >= 0) { 
+                 if(confirm(`Item ${item.sku} is already in ${locId}. Add +${qty} to quantity?`)) {
+                    handleUpdateQty(item, locId, qty);
+                 }
+                 return; 
+             }
              await handleUpdateStockLocation(item.sku, [...currentLocs, targetLoc].join(', '));
           };
 
@@ -1235,3 +1356,4 @@ function response(data) {
     </script>
 </body>
 </html>
+    
