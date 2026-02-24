@@ -790,6 +790,10 @@ const UpdateServiceModal = ({ service, servicemenNames, serviceOptions, isOpen, 
     const [selectedServices, setSelectedServices] = useState([]);
     const [color, setColor] = useState('');
     const [size, setSize] = useState('');
+    const [showDeliveryOtpModal, setShowDeliveryOtpModal] = useState(false);
+const [generatedOtp, setGeneratedOtp] = useState('');
+const [enteredOtp, setEnteredOtp] = useState('');
+const [otpError, setOtpError] = useState('');
     
     // WhatsApp Feature State
     const [showWhatsAppConfirm, setShowWhatsAppConfirm] = useState(false);
@@ -853,7 +857,88 @@ const UpdateServiceModal = ({ service, servicemenNames, serviceOptions, isOpen, 
         if (name === 'serviceStatus' && value === 'Informed to Customer') {
             setShowWhatsAppConfirm(true);
         }
+        if (value === 'Delivered to Customer') {
+        generateAndSendOtp();
+    }
     };
+
+// === Generate OPT ===
+
+const generateAndSendOtp = async () => {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    setGeneratedOtp(otp);
+    setShowDeliveryOtpModal(true);
+
+    await sendDeliveryOtpToWhatsApp(otp);
+};
+
+// === Send Generated OTP (Updated Version) ===
+
+const sendDeliveryOtpToWhatsApp = async (otp) => {
+    try {
+        const WEBHOOK_URL = "https://api.ownchat.app/apps/699d786ddb3905a893415540/events/699d786ddb3905a893415541";
+
+        // Clean and format phone
+        let phone = String(formData.contact || '').replace(/\D/g, '');
+        if (phone.length === 10) {
+            phone = "91" + phone;
+        }
+
+        const payload = {
+            event_type: "Store_Service_Delivery_OTP",
+            timestamp: new Date().toISOString(),
+            data: {
+                recipientPhone: phone,
+                customerName: formData.customerName,
+                otp: otp,
+                slipNo: formData.slipNo
+            }
+        };
+
+        console.log("Sending Payload:", payload);
+
+        const response = await fetch(WEBHOOK_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const resultText = await response.text();
+
+        console.log("Webhook Status:", response.status);
+        console.log("Webhook Response:", resultText);
+
+        if (!response.ok) {
+            alert("Failed to send OTP.\nStatus: " + response.status);
+        }
+
+    } catch (error) {
+        console.error("OTP WhatsApp error:", error);
+        alert("Error sending OTP. Check console.");
+    }
+};
+// === verify OPT ===
+const verifyOtp = () => {
+    if (enteredOtp === generatedOtp) {
+        setOtpError('');
+        setShowDeliveryOtpModal(false);
+        alert("Delivery Confirmed Successfully!");
+    } else {
+        setOtpError("Wrong OTP! Please try again.");
+    }
+};
+
+const formatDisplayDate = (dateString) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric'
+    });
+};
 
     const handleImageChange = async (e) => {
         const file = e.target.files?.[0];
@@ -1026,6 +1111,47 @@ const UpdateServiceModal = ({ service, servicemenNames, serviceOptions, isOpen, 
                         </div>
                     </div>
                 )}
+                {showDeliveryOtpModal && (
+    <div className="absolute inset-0 z-50 flex justify-center items-center bg-black bg-opacity-60 rounded-lg">
+        <div className="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full mx-4">
+            <h3 className="text-lg font-semibold text-center mb-4">Enter Delivery OTP</h3>
+
+            <input
+                type="text"
+                maxLength={6}
+                value={enteredOtp}
+                onChange={(e) => setEnteredOtp(e.target.value)}
+                className="w-full border rounded-md px-3 py-2 text-center text-lg tracking-widest"
+                placeholder="Enter 6-digit OTP"
+            />
+
+            {otpError && (
+                <p className="text-red-600 text-sm mt-2 text-center">{otpError}</p>
+            )}
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+                <button
+                    onClick={() => {
+                        setShowDeliveryOtpModal(false);
+                        setEnteredOtp('');
+                        setOtpError('');
+                        setFormData(prev => ({ ...prev, serviceStatus: 'Completed' }));
+                    }}
+                    className="border px-4 py-2 rounded-md"
+                >
+                    Cancel
+                </button>
+
+                <button
+                    onClick={verifyOtp}
+                    className="bg-green-600 text-white px-4 py-2 rounded-md"
+                >
+                    Verify
+                </button>
+            </div>
+        </div>
+    </div>
+)}
 
                 <div className="p-6 border-b sticky top-0 bg-white z-10">
                     <div className="flex justify-between items-center">
@@ -1040,22 +1166,87 @@ const UpdateServiceModal = ({ service, servicemenNames, serviceOptions, isOpen, 
                         {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg" role="alert">{error}</div>}
                         
                         <div className="p-6 border border-gray-200 rounded-lg">
-                            <h3 className="text-lg font-semibold text-gray-700 mb-4">Customer & Product Information <span className="text-sm font-normal text-gray-500">{isReadOnly ? '(Editable)' : '(Read-Only)'}</span></h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                <InputField label="Customer Name" name="customerName" value={formData.customerName} onChange={handleChange} disabled={!isReadOnly} />
-                                <InputField label="Contact" name="contact" value={formData.contact} onChange={handleChange} disabled={!isReadOnly} error={formErrors.contact} />
-                                <InputField label="Product Name" name="productName" value={formData.productName} onChange={handleChange} disabled={!isReadOnly} />
-                                <InputField label="Brand" name="brand" value={formData.brand} onChange={handleChange} disabled={!isReadOnly} />
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Color</label>
-                                    <input type="text" value={color} onChange={e => setColor(e.target.value)} disabled={!isReadOnly} className={`mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${!isReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}/>
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700">Size</label>
-                                    <input type="text" value={size} onChange={e => setSize(e.target.value)} disabled={!isReadOnly} className={`mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${!isReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}/>
-                                </div>
-                            </div>
-                        </div>
+
+    {/* Header Row with Date */}
+    <div className="flex justify-between items-center mb-4">
+        <h3 className="text-lg font-semibold text-gray-700">
+            Customer & Product Information
+            <span className="text-sm font-normal text-gray-500 ml-2">
+                {isReadOnly ? '(Editable)' : '(Read-Only)'}
+            </span>
+        </h3>
+
+        {/* Small Date Box */}
+        <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-500">Date:</span>
+            <input
+                type="text"
+                value={formatDisplayDate(formData.date)}
+                disabled
+                className="w-32 px-2 py-1 bg-gray-100 border border-gray-300 rounded text-sm text-center"
+            />
+        </div>
+    </div>
+
+    {/* Grid Content */}
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <InputField
+            label="Customer Name"
+            name="customerName"
+            value={formData.customerName}
+            onChange={handleChange}
+            disabled={!isReadOnly}
+        />
+
+        <InputField
+            label="Contact"
+            name="contact"
+            value={formData.contact}
+            onChange={handleChange}
+            disabled={!isReadOnly}
+            error={formErrors.contact}
+        />
+
+        <InputField
+            label="Product Name"
+            name="productName"
+            value={formData.productName}
+            onChange={handleChange}
+            disabled={!isReadOnly}
+        />
+
+        <InputField
+            label="Brand"
+            name="brand"
+            value={formData.brand}
+            onChange={handleChange}
+            disabled={!isReadOnly}
+        />
+
+        <div>
+            <label className="block text-sm font-medium text-gray-700">Color</label>
+            <input
+                type="text"
+                value={color}
+                onChange={e => setColor(e.target.value)}
+                disabled={!isReadOnly}
+                className={`mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${!isReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+            />
+        </div>
+
+        <div>
+            <label className="block text-sm font-medium text-gray-700">Size</label>
+            <input
+                type="text"
+                value={size}
+                onChange={e => setSize(e.target.value)}
+                disabled={!isReadOnly}
+                className={`mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 ${!isReadOnly ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+            />
+        </div>
+    </div>
+
+</div>
 
                         <div className="p-6 border border-gray-200 rounded-lg">
                             <h3 className="text-lg font-semibold text-gray-700 mb-4">Service & Warranty Details</h3>
