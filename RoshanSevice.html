@@ -1566,6 +1566,60 @@ const ServiceEntryForm = ({ onSuccess, onCompletionSuccess, serviceToComplete: s
         }
         return errors;
     };
+    
+    const OWNCHAT_WEBHOOK_URL =
+  "https://api.ownchat.app/apps/699d38d6db3905a8933ff27a/events/699d38d6db3905a8933ff27b";
+
+const sendSlipWhatsAppMessage = async (
+  customerName: string,
+  contact: string,
+  slipNumber: string
+) => {
+  try {
+    // Format phone
+    let formattedPhone = contact.replace(/\D/g, "");
+    if (formattedPhone.length === 10) {
+      formattedPhone = "91" + formattedPhone;
+    }
+
+    // Format date like 24-Feb-2026
+    const today = new Date();
+    const formattedDate = today
+      .toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      })
+      .replace(/ /g, "-");
+
+    const payload = {
+      event_type: "Store_Service", // same working event
+      timestamp: new Date().toISOString(),
+      data: {
+        recipientPhone: formattedPhone,
+        customerName: customerName,
+        slipNumber: slipNumber,
+        slipDate: formattedDate,
+      },
+    };
+
+    const response = await fetch(OWNCHAT_WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      console.error("WhatsApp trigger failed");
+    } else {
+      console.log("WhatsApp triggered successfully");
+    }
+  } catch (error) {
+    console.error("WhatsApp error:", error);
+  }
+};
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -1663,6 +1717,11 @@ const ServiceEntryForm = ({ onSuccess, onCompletionSuccess, serviceToComplete: s
                 }
 
                 const response = await submitService(payload);
+                await sendSlipWhatsAppMessage(
+  formData.customerName,
+  formData.contact,
+  slipNo
+);
                 const { image, imageName, imageMimeType, ...serviceDataFromPayload } = payload;
                 const newServiceData = {
                     ...serviceDataFromPayload,
